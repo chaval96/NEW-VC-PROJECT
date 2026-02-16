@@ -19,8 +19,30 @@ export type SubmissionStatus =
   | "needs_review"
   | "errored";
 
+export type SubmissionRequestStatus =
+  | "pending_approval"
+  | "approved"
+  | "rejected"
+  | "executing"
+  | "completed"
+  | "failed";
+
+export interface Workspace {
+  id: string;
+  name: string;
+  profile: Profile;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspacesResponse {
+  activeWorkspaceId: string;
+  workspaces: Workspace[];
+}
+
 export interface Firm {
   id: string;
+  workspaceId: string;
   name: string;
   website: string;
   geography: string;
@@ -44,6 +66,7 @@ export interface Firm {
 
 export interface SubmissionEvent {
   id: string;
+  workspaceId: string;
   firmId: string;
   firmName: string;
   channel: "website_form";
@@ -56,8 +79,39 @@ export interface SubmissionEvent {
   note?: string;
 }
 
+export interface SubmissionRequest {
+  id: string;
+  workspaceId: string;
+  firmId: string;
+  firmName: string;
+  website: string;
+  preparedAt: string;
+  preparedPayload: {
+    contactName: string;
+    contactTitle: string;
+    contactEmail: string;
+    contactPhone: string;
+    linkedin: string;
+    calendly: string;
+    companyName: string;
+    companyWebsite: string;
+    companySummary: string;
+    raiseSummary: string;
+    deckUrl: string;
+    dataRoomUrl: string;
+  };
+  formUrlCandidate?: string;
+  status: SubmissionRequestStatus;
+  mode: "dry_run" | "production";
+  approvedBy?: string;
+  approvedAt?: string;
+  executedAt?: string;
+  resultNote?: string;
+}
+
 export interface CampaignRun {
   id: string;
+  workspaceId: string;
   startedAt: string;
   completedAt?: string;
   initiatedBy: string;
@@ -72,6 +126,10 @@ export interface CampaignRun {
 }
 
 export interface OverviewResponse {
+  workspace: {
+    id: string;
+    name: string;
+  };
   kpis: {
     targetsTotal: number;
     attempts: number;
@@ -94,6 +152,7 @@ export interface OverviewResponse {
   }>;
   recentActivities: SubmissionEvent[];
   activeRuns: CampaignRun[];
+  pendingApprovals: number;
 }
 
 export interface Profile {
@@ -131,6 +190,7 @@ export interface RunDetail {
   run: CampaignRun;
   tasks: Array<{
     id: string;
+    workspaceId: string;
     runId: string;
     firmId: string;
     firmName: string;
@@ -144,6 +204,7 @@ export interface RunDetail {
   }>;
   logs: Array<{
     id: string;
+    workspaceId: string;
     runId: string;
     timestamp: string;
     level: "info" | "warn" | "error";

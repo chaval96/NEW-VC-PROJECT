@@ -1,6 +1,6 @@
 import dayjs from "dayjs";
 import { v4 as uuid } from "uuid";
-import type { AppState, Firm, PipelineStage, SubmissionEvent, SubmissionStatus, WaskCompanyProfile } from "./types.js";
+import type { AppState, CompanyProfile, Firm, PipelineStage, SubmissionEvent, SubmissionStatus, Workspace } from "./types.js";
 
 const STAGE_ORDER: PipelineStage[] = [
   "lead",
@@ -18,38 +18,74 @@ function pickStage(index: number): PipelineStage {
   return STAGE_ORDER[index % STAGE_ORDER.length] ?? "lead";
 }
 
-const profile: WaskCompanyProfile = {
-  company: "WASK Inc.",
-  website: "https://www.wask.co",
-  oneLiner:
-    "WASK is an Agentic AI AdTech platform that automates Google and Meta ad optimization with minimal human effort.",
-  longDescription:
-    "WASK enables businesses to run, optimize, and maximize Google and Meta ad performance through autonomous optimization flows, omnichannel analytics, and AI-powered creative generation.",
-  senderName: "Utku Bozkurt",
-  senderTitle: "Co-Founder & Chief Strategy Officer",
-  senderEmail: "investment@wask.co",
-  senderPhone: "+44 7435583335",
-  linkedin: "https://www.linkedin.com/in/utku-bozkurtt/",
-  calendly: "https://calendly.com/utku_bozkurt/intro-call?month=2026-02",
-  metrics: {
-    arr: "$2.1M",
-    mrr: "$180K",
-    subscribers: "7,000+",
-    countries: "130+",
-    ltvCac: "4.80x",
-    churn: "4.21%",
-    cumulativeRevenue: "$6.8M"
-  },
-  fundraising: {
-    round: "Series A",
-    amount: "$4,000,000",
-    valuation: "$22.4M",
-    secured: "60% (~$2.4M)",
-    instrument: "SAFE",
-    deckUrl: "https://wask.docsend.com/view/6t5b4788rzun7ew7",
-    dataRoomUrl: "https://waskinc-dataroom.notion.site/"
-  }
-};
+export function buildTemplateProfile(companyName = "New Company"): CompanyProfile {
+  return {
+    company: companyName,
+    website: "https://example.com",
+    oneLiner: `${companyName} is a high-growth technology company raising capital for expansion.`,
+    longDescription:
+      `${companyName} builds products for global markets and is preparing investor outreach through structured website form submissions.`,
+    senderName: "Founder Name",
+    senderTitle: "Founder",
+    senderEmail: "founder@example.com",
+    senderPhone: "+1 000 000 0000",
+    linkedin: "https://www.linkedin.com/",
+    calendly: "https://calendly.com/",
+    metrics: {
+      arr: "$0",
+      mrr: "$0",
+      subscribers: "0",
+      countries: "0",
+      ltvCac: "0x",
+      churn: "0%",
+      cumulativeRevenue: "$0"
+    },
+    fundraising: {
+      round: "Seed",
+      amount: "$1,000,000",
+      valuation: "$10M",
+      secured: "0%",
+      instrument: "SAFE",
+      deckUrl: "https://example.com/deck",
+      dataRoomUrl: "https://example.com/data-room"
+    }
+  };
+}
+
+function buildWaskProfile(): CompanyProfile {
+  return {
+    company: "WASK Inc.",
+    website: "https://www.wask.co",
+    oneLiner:
+      "WASK is an Agentic AI AdTech platform that automates Google and Meta ad optimization with minimal human effort.",
+    longDescription:
+      "WASK enables businesses to run, optimize, and maximize Google and Meta ad performance through autonomous optimization flows, omnichannel analytics, and AI-powered creative generation.",
+    senderName: "Utku Bozkurt",
+    senderTitle: "Co-Founder & Chief Strategy Officer",
+    senderEmail: "investment@wask.co",
+    senderPhone: "+44 7435583335",
+    linkedin: "https://www.linkedin.com/in/utku-bozkurtt/",
+    calendly: "https://calendly.com/utku_bozkurt/intro-call?month=2026-02",
+    metrics: {
+      arr: "$2.1M",
+      mrr: "$180K",
+      subscribers: "7,000+",
+      countries: "130+",
+      ltvCac: "4.80x",
+      churn: "4.21%",
+      cumulativeRevenue: "$6.8M"
+    },
+    fundraising: {
+      round: "Series A",
+      amount: "$4,000,000",
+      valuation: "$22.4M",
+      secured: "60% (~$2.4M)",
+      instrument: "SAFE",
+      deckUrl: "https://wask.docsend.com/view/6t5b4788rzun7ew7",
+      dataRoomUrl: "https://waskinc-dataroom.notion.site/"
+    }
+  };
+}
 
 const firmSeed = [
   ["Grand Strand Angel Network", "http://www.grandstrandangelnetwork.com", "US", "Angel Network", "$50K-$500K", ["SaaS", "B2B"]],
@@ -69,7 +105,7 @@ const firmSeed = [
   ["Appalachian Investors Alliance", "https://appalachianinvestors.org/", "US", "Syndicate", "$250K-$2M", ["SaaS", "AI"]]
 ] as const;
 
-function generateFirms(): Firm[] {
+function generateFirms(workspaceId: string): Firm[] {
   return firmSeed.map((entry, index) => {
     const [name, website, geography, investorType, checkSizeRange, focusSectors] = entry;
     const id = uuid();
@@ -78,6 +114,7 @@ function generateFirms(): Firm[] {
 
     return {
       id,
+      workspaceId,
       name,
       website,
       geography,
@@ -111,7 +148,7 @@ function syntheticStatus(index: number): SubmissionStatus {
   return "queued";
 }
 
-function generateEvents(firms: Firm[]): SubmissionEvent[] {
+function generateEvents(workspaceId: string, firms: Firm[]): SubmissionEvent[] {
   const events: SubmissionEvent[] = [];
 
   for (let i = 0; i < 42; i += 1) {
@@ -122,6 +159,7 @@ function generateEvents(firms: Firm[]): SubmissionEvent[] {
 
     events.push({
       id: uuid(),
+      workspaceId,
       firmId: firm.id,
       firmName: firm.name,
       channel: "website_form",
@@ -147,13 +185,27 @@ function generateEvents(firms: Firm[]): SubmissionEvent[] {
   return events;
 }
 
+export function createWorkspace(name: string, profile: CompanyProfile): Workspace {
+  const now = new Date().toISOString();
+  return {
+    id: uuid(),
+    name,
+    profile,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
 export function createSeedState(): AppState {
-  const firms = generateFirms();
+  const workspace = createWorkspace("WASK Fundraising", buildWaskProfile());
+  const firms = generateFirms(workspace.id);
 
   return {
-    profile,
+    workspaces: [workspace],
+    activeWorkspaceId: workspace.id,
     firms,
-    submissionEvents: generateEvents(firms),
+    submissionEvents: generateEvents(workspace.id, firms),
+    submissionRequests: [],
     tasks: [],
     runs: [],
     logs: []

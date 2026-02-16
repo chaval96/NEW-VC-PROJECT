@@ -17,6 +17,8 @@ export const personalizationAgent: OutreachAgent = {
       summary: "Form-ready payload prepared for VC submission fields",
       output: {
         headline: `Series A opportunity: ${context.profile.company}`,
+        companyName: context.profile.company,
+        companyWebsite: context.profile.website,
         companySummary: `${context.profile.oneLiner} ${positioningLine}`,
         longDescription: context.profile.longDescription,
         raise: `${context.profile.fundraising.round} | ${context.profile.fundraising.amount} | ${context.profile.fundraising.valuation}`,

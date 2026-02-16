@@ -1,9 +1,9 @@
-import type { Firm, WaskCompanyProfile } from "../domain/types.js";
+import type { CompanyProfile, Firm } from "../domain/types.js";
 
 export interface AgentContext {
   runId: string;
   firm: Firm;
-  profile: WaskCompanyProfile;
+  profile: CompanyProfile;
   now: string;
   mode: "dry_run" | "production";
 }

@@ -1,5 +1,5 @@
 import dayjs from "dayjs";
-import type { AppState, OverviewResponse, PipelineStage, SubmissionEvent } from "../domain/types.js";
+import type { CampaignRun, OverviewResponse, PipelineStage, SubmissionEvent, SubmissionRequest, Workspace, Firm } from "../domain/types.js";
 
 const stageOrder: PipelineStage[] = [
   "lead",
@@ -17,8 +17,13 @@ function countByPredicate(events: SubmissionEvent[], predicate: (event: Submissi
   return events.filter(predicate).length;
 }
 
-export function buildOverview(state: AppState): OverviewResponse {
-  const events = state.submissionEvents;
+export function buildOverview(
+  workspace: Workspace,
+  firms: Firm[],
+  events: SubmissionEvent[],
+  runs: CampaignRun[],
+  requests: SubmissionRequest[]
+): OverviewResponse {
   const attempts = events.length;
   const formsDiscovered = countByPredicate(events, (event) => ["form_discovered", "form_filled", "submitted"].includes(event.status));
   const formsFilled = countByPredicate(events, (event) => ["form_filled", "submitted"].includes(event.status));
@@ -28,12 +33,13 @@ export function buildOverview(state: AppState): OverviewResponse {
 
   const stageCounts = new Map<PipelineStage, number>();
   for (const stage of stageOrder) stageCounts.set(stage, 0);
-  for (const firm of state.firms) stageCounts.set(firm.stage, (stageCounts.get(firm.stage) ?? 0) + 1);
+  for (const firm of firms) stageCounts.set(firm.stage, (stageCounts.get(firm.stage) ?? 0) + 1);
 
   const weeklyMap = new Map<
     string,
     { attempts: number; discovered: number; filled: number; submitted: number; blocked: number; noFormFound: number }
   >();
+
   for (let weekOffset = 5; weekOffset >= 0; weekOffset -= 1) {
     const key = dayjs().subtract(weekOffset, "week").startOf("week").format("YYYY-MM-DD");
     weeklyMap.set(key, { attempts: 0, discovered: 0, filled: 0, submitted: 0, blocked: 0, noFormFound: 0 });
@@ -61,9 +67,16 @@ export function buildOverview(state: AppState): OverviewResponse {
     };
   });
 
+  const activeRuns = runs.filter((run) => run.status === "running");
+  const pendingApprovals = requests.filter((request) => request.status === "pending_approval").length;
+
   return {
+    workspace: {
+      id: workspace.id,
+      name: workspace.name
+    },
     kpis: {
-      targetsTotal: state.firms.length,
+      targetsTotal: firms.length,
       attempts,
       formsDiscovered,
       formsFilled,
@@ -74,7 +87,8 @@ export function buildOverview(state: AppState): OverviewResponse {
     },
     stageBreakdown: stageOrder.map((stage) => ({ stage, count: stageCounts.get(stage) ?? 0 })),
     weeklyTrend,
-    recentActivities: state.submissionEvents.slice(0, 20),
-    activeRuns: state.runs.filter((run) => run.status === "running")
+    recentActivities: events.slice(0, 20),
+    activeRuns,
+    pendingApprovals
   };
 }

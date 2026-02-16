@@ -1,24 +1,25 @@
-# WASK VC FormOps App
+# Fundraising Operations Hub
 
-Internal VC outreach operations app focused on website form submissions (no separate email outreach).
+Multi-company internal web app for VC website-form outreach.
 
-## What this app includes
+## Core capabilities
 
-- Apollo-style internal dashboard for form operations
-- VC target tracking with filters (location, investor type, check size, focus sectors)
-- Agent orchestration pipeline for form workflows
-- Run/task/log auditing for each orchestration
-- Postgres persistence support for production
-- Railway Docker deployment config
+- Multiple fundraising projects/workspaces (not WASK-only)
+- Per-workspace company profile and fundraising metadata
+- CSV investor import (append/replace)
+- Agent orchestration pipeline for form operations
+- Human approval queue before final submission
+- Playwright-ready execution hook for real website form automation
+- Dashboard metrics and audit logs
 
-## Agent pipeline (form only)
+## Current workflow
 
-1. `FormDiscoveryAgent`
-2. `QualificationAgent`
-3. `FormMappingAgent`
-4. `QAAgent`
-5. `SubmissionAgent`
-6. `TrackingAgent`
+1. Create/select workspace (company fundraising project)
+2. Update company profile
+3. Import investor list via CSV
+4. Run orchestration (`dry_run` or `production`)
+5. Review `pending_approval` queue
+6. Approve/reject one by one
 
 ## Local development
 
@@ -30,38 +31,69 @@ npm run dev
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:8787`
 
-## Railway deployment
+## Railway deploy
 
-### Required app variables
+### Variables
 
-- `DATABASE_URL` (Railway Postgres reference)
+Required:
+
+- `DATABASE_URL` (reference to Railway Postgres)
 - `NODE_ENV=production`
 - `DATABASE_SSL=require`
-- `CORS_ORIGIN=*` (temporary)
-- `PORT` optional on Railway (platform sets this automatically)
+- `CORS_ORIGIN=*` (set to real domain later)
 
-### Railway build/deploy
+Optional for real browser automation:
+
+- `PLAYWRIGHT_ENABLED=true`
+- `PLAYWRIGHT_SUBMIT_ENABLED=true`
+
+### Build
 
 - Builder: Dockerfile
 - Dockerfile path: `Dockerfile`
 - Root directory: repo root
 
-`railway.json` is included to force Docker builder.
+`railway.json` already forces Dockerfile build.
 
-## API endpoints
+## CSV format
 
-- `GET /api/health`
-- `GET /api/dashboard/overview`
-- `GET /api/profile`
-- `GET /api/playbook`
-- `GET /api/firms`
-- `GET /api/firms/:id`
-- `PATCH /api/firms/:id/stage`
-- `GET /api/runs`
-- `GET /api/runs/:id`
+At minimum, include columns:
+
+- `name` (or `company` / `firm`)
+- `website` (or `domain` / `url`)
+
+Optional columns:
+
+- `location`
+- `investor_type`
+- `check_size_range`
+- `focus_sectors` (comma or semicolon separated)
+
+## API highlights
+
+- `GET /api/workspaces`
+- `POST /api/workspaces`
+- `POST /api/workspaces/:id/activate`
+- `PATCH /api/workspaces/:id/profile`
+- `POST /api/firms/import-csv`
+- `GET /api/submissions/queue`
+- `POST /api/submissions/:id/approve`
+- `POST /api/submissions/:id/reject`
 - `POST /api/runs`
 
-## Notes
+## How to deploy updates (every time)
 
-- Current `production` mode provides deterministic simulation for statuses.
-- To perform actual autonomous browser form submissions, integrate Playwright worker execution into `SubmissionAgent`.
+1. Commit and push code from GitHub Desktop
+2. Railway auto-deploys from connected repo
+3. Open latest deployment logs
+4. Validate:
+   - `/api/health`
+   - workspace switch
+   - CSV import
+   - run creation
+   - queue approve/reject
+
+## Real submission automation notes
+
+`SubmissionExecutor` supports Playwright through dynamic import. If Playwright is not installed or enabled, it safely falls back to simulation.
+For full real execution in production, install Playwright and enable both Playwright env vars.

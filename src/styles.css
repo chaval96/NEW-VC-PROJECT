@@ -71,12 +71,18 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
 
 .status-pill.queued,
 .status-pill.form_discovered,
-.status-pill.form_filled { background: #e8f0ff; color: #1d4ca4; }
-.status-pill.submitted { background: #e9f9ef; color: #1f7c46; }
+.status-pill.form_filled,
+.status-pill.pending_approval,
+.status-pill.approved,
+.status-pill.executing { background: #e8f0ff; color: #1d4ca4; }
+.status-pill.submitted,
+.status-pill.completed { background: #e9f9ef; color: #1f7c46; }
 .status-pill.no_form_found,
-.status-pill.needs_review { background: #fff0d9; color: #956100; }
+.status-pill.needs_review,
+.status-pill.rejected { background: #fff0d9; color: #956100; }
 .status-pill.blocked,
-.status-pill.errored { background: #fde7e7; color: #8d2929; }
+.status-pill.errored,
+.status-pill.failed { background: #fde7e7; color: #8d2929; }
 
 .form-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .select, .input { width: 100%; border: 1px solid #d8e1ed; background: #fff; border-radius: 8px; padding: 8px 10px; }

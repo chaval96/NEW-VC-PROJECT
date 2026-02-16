@@ -23,6 +23,14 @@ export type SubmissionStatus =
   | "needs_review"
   | "errored";
 
+export type SubmissionRequestStatus =
+  | "pending_approval"
+  | "approved"
+  | "rejected"
+  | "executing"
+  | "completed"
+  | "failed";
+
 export type RunStatus = "running" | "completed" | "failed";
 
 export interface FirmContact {
@@ -35,6 +43,7 @@ export interface FirmContact {
 
 export interface SubmissionEvent {
   id: string;
+  workspaceId: string;
   firmId: string;
   firmName: string;
   channel: SubmissionChannel;
@@ -47,8 +56,39 @@ export interface SubmissionEvent {
   note?: string;
 }
 
+export interface SubmissionRequest {
+  id: string;
+  workspaceId: string;
+  firmId: string;
+  firmName: string;
+  website: string;
+  preparedAt: string;
+  preparedPayload: {
+    contactName: string;
+    contactTitle: string;
+    contactEmail: string;
+    contactPhone: string;
+    linkedin: string;
+    calendly: string;
+    companyName: string;
+    companyWebsite: string;
+    companySummary: string;
+    raiseSummary: string;
+    deckUrl: string;
+    dataRoomUrl: string;
+  };
+  formUrlCandidate?: string;
+  status: SubmissionRequestStatus;
+  mode: "dry_run" | "production";
+  approvedBy?: string;
+  approvedAt?: string;
+  executedAt?: string;
+  resultNote?: string;
+}
+
 export interface Firm {
   id: string;
+  workspaceId: string;
   name: string;
   website: string;
   geography: string;
@@ -66,6 +106,7 @@ export interface Firm {
 
 export interface AgentTaskResult {
   id: string;
+  workspaceId: string;
   runId: string;
   firmId: string;
   firmName: string;
@@ -80,6 +121,7 @@ export interface AgentTaskResult {
 
 export interface RunLog {
   id: string;
+  workspaceId: string;
   runId: string;
   timestamp: string;
   level: "info" | "warn" | "error";
@@ -89,6 +131,7 @@ export interface RunLog {
 
 export interface CampaignRun {
   id: string;
+  workspaceId: string;
   startedAt: string;
   completedAt?: string;
   initiatedBy: string;
@@ -102,7 +145,7 @@ export interface CampaignRun {
   logIds: string[];
 }
 
-export interface WaskCompanyProfile {
+export interface CompanyProfile {
   company: string;
   website: string;
   oneLiner: string;
@@ -133,16 +176,30 @@ export interface WaskCompanyProfile {
   };
 }
 
+export interface Workspace {
+  id: string;
+  name: string;
+  profile: CompanyProfile;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppState {
-  profile: WaskCompanyProfile;
+  workspaces: Workspace[];
+  activeWorkspaceId: string;
   firms: Firm[];
   submissionEvents: SubmissionEvent[];
+  submissionRequests: SubmissionRequest[];
   tasks: AgentTaskResult[];
   runs: CampaignRun[];
   logs: RunLog[];
 }
 
 export interface OverviewResponse {
+  workspace: {
+    id: string;
+    name: string;
+  };
   kpis: {
     targetsTotal: number;
     attempts: number;
@@ -165,4 +222,5 @@ export interface OverviewResponse {
   }>;
   recentActivities: SubmissionEvent[];
   activeRuns: CampaignRun[];
+  pendingApprovals: number;
 }

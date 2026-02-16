@@ -96,7 +96,7 @@ export function RunControlPanel({
       </div>
 
       <div className="card card-pad">
-        <h3 className="card-title">WASK Snapshot</h3>
+        <h3 className="card-title">Active Company Snapshot</h3>
         {profile ? (
           <div className="meta-grid">
             <div className="meta-item"><div className="k">Company</div><div className="v">{profile.company}</div></div>
