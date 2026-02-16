@@ -40,6 +40,18 @@ export interface WorkspacesResponse {
   workspaces: Workspace[];
 }
 
+export interface ImportBatch {
+  id: string;
+  workspaceId: string;
+  sourceName: string;
+  sourceType: "csv" | "excel" | "google_drive";
+  importedCount: number;
+  importedAt: string;
+  status: "completed" | "failed";
+  note?: string;
+  runId?: string;
+}
+
 export interface Firm {
   id: string;
   workspaceId: string;

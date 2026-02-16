@@ -206,6 +206,7 @@ export function createSeedState(): AppState {
     firms,
     submissionEvents: generateEvents(workspace.id, firms),
     submissionRequests: [],
+    importBatches: [],
     tasks: [],
     runs: [],
     logs: []

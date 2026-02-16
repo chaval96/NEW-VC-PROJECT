@@ -9,6 +9,7 @@ import type {
   CampaignRun,
   CompanyProfile,
   Firm,
+  ImportBatch,
   RunLog,
   SubmissionEvent,
   SubmissionRequest,
@@ -55,6 +56,7 @@ function migrateLegacyState(raw: any): AppState {
         ? raw.outreachEvents.map((event: any) => ({ ...event, workspaceId, id: event.id ?? uuid() }))
         : [],
     submissionRequests: [],
+    importBatches: [],
     tasks: Array.isArray(raw?.tasks)
       ? raw.tasks.map((task: any) => ({ ...task, workspaceId, id: task.id ?? uuid() }))
       : [],
@@ -82,6 +84,9 @@ export class StateStore {
     try {
       const raw = await readFile(dataPath, "utf8");
       this.state = migrateLegacyState(JSON.parse(raw));
+      if (!Array.isArray((this.state as any).importBatches)) {
+        (this.state as any).importBatches = [];
+      }
       if (this.state.workspaces.length === 0) {
         this.state = createSeedState();
       }
@@ -242,6 +247,14 @@ export class StateStore {
     const updated = updater(this.state.submissionRequests[index]);
     this.state.submissionRequests[index] = updated;
     return updated;
+  }
+
+  addImportBatch(batch: ImportBatch): void {
+    this.state.importBatches.unshift(batch);
+  }
+
+  listImportBatches(workspaceId = this.state.activeWorkspaceId): ImportBatch[] {
+    return (this.state.importBatches ?? []).filter((batch) => batch.workspaceId === workspaceId);
   }
 
   addRun(run: CampaignRun): void {

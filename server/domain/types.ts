@@ -86,6 +86,18 @@ export interface SubmissionRequest {
   resultNote?: string;
 }
 
+export interface ImportBatch {
+  id: string;
+  workspaceId: string;
+  sourceName: string;
+  sourceType: "csv" | "excel" | "google_drive";
+  importedCount: number;
+  importedAt: string;
+  status: "completed" | "failed";
+  note?: string;
+  runId?: string;
+}
+
 export interface Firm {
   id: string;
   workspaceId: string;
@@ -190,6 +202,7 @@ export interface AppState {
   firms: Firm[];
   submissionEvents: SubmissionEvent[];
   submissionRequests: SubmissionRequest[];
+  importBatches: ImportBatch[];
   tasks: AgentTaskResult[];
   runs: CampaignRun[];
   logs: RunLog[];

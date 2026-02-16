@@ -5,9 +5,10 @@ Multi-company internal web app for VC website-form outreach.
 ## Core capabilities
 
 - Multiple fundraising projects/workspaces (not WASK-only)
-- Per-workspace company profile and fundraising metadata
-- CSV investor import (append/replace)
-- Agent orchestration pipeline for form operations
+- Project-first UX: `/projects` -> select project -> project dashboard
+- Per-workspace company knowledge base (company, fundraising, metrics)
+- Investor import via CSV/Excel upload and Google Drive link
+- Background agent pipeline for form operations (not exposed in UI)
 - Human approval queue before final submission
 - Playwright-ready execution hook for real website form automation
 - Dashboard metrics and audit logs
@@ -15,9 +16,9 @@ Multi-company internal web app for VC website-form outreach.
 ## Current workflow
 
 1. Create/select workspace (company fundraising project)
-2. Update company profile
-3. Import investor list via CSV
-4. Run orchestration (`dry_run` or `production`)
+2. Fill company knowledge base
+3. Import investor list (CSV/Excel or Google Drive)
+4. Background run prepares submission requests
 5. Review `pending_approval` queue
 6. Approve/reject one by one
 
@@ -75,7 +76,9 @@ Optional columns:
 - `POST /api/workspaces`
 - `POST /api/workspaces/:id/activate`
 - `PATCH /api/workspaces/:id/profile`
-- `POST /api/firms/import-csv`
+- `POST /api/firms/import-file`
+- `POST /api/firms/import-drive`
+- `GET /api/imports`
 - `GET /api/submissions/queue`
 - `POST /api/submissions/:id/approve`
 - `POST /api/submissions/:id/reject`
@@ -89,8 +92,8 @@ Optional columns:
 4. Validate:
    - `/api/health`
    - workspace switch
-   - CSV import
-   - run creation
+   - CSV/Excel or Drive import
+   - import list history
    - queue approve/reject
 
 ## Real submission automation notes

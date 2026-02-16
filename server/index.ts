@@ -8,7 +8,7 @@ import { buildOverview } from "./services/analytics.js";
 import { CampaignOrchestrator } from "./orchestrator/workflow.js";
 import { batchOne, systemPrompt } from "./domain/playbook.js";
 import { buildTemplateProfile } from "./domain/seed.js";
-import { parseFirmsCsv } from "./services/csv-import.js";
+import { parseFirmsFromGoogleDriveLink, parseFirmsFromUpload } from "./services/import-parser.js";
 import { executeSubmissionRequest } from "./services/submission-executor.js";
 import type { CompanyProfile, PipelineStage, SubmissionStatus } from "./domain/types.js";
 
@@ -58,7 +58,8 @@ app.get("/api/workspaces", (_req, res) => {
 
 const createWorkspaceSchema = z.object({
   name: z.string().min(2),
-  company: z.string().optional()
+  company: z.string().optional(),
+  website: z.string().optional()
 });
 
 app.post("/api/workspaces", async (req, res) => {
@@ -69,6 +70,9 @@ app.post("/api/workspaces", async (req, res) => {
   }
 
   const profile = buildTemplateProfile(parsed.data.company ?? parsed.data.name);
+  if (parsed.data.website) {
+    profile.website = parsed.data.website;
+  }
   const workspace = store.createWorkspaceEntry(parsed.data.name, profile);
   await store.persist();
   res.status(201).json(workspace);
@@ -162,31 +166,122 @@ app.get("/api/firms", (_req, res) => {
   res.json(store.listFirms());
 });
 
-const importCsvSchema = z.object({
-  csv: z.string().min(1),
-  mode: z.enum(["append", "replace"]).default("append")
+app.get("/api/imports", (_req, res) => {
+  res.json(
+    store
+      .listImportBatches()
+      .sort((a, b) => (a.importedAt > b.importedAt ? -1 : 1))
+  );
 });
 
-app.post("/api/firms/import-csv", async (req, res) => {
-  const parsed = importCsvSchema.safeParse(req.body ?? {});
+const importFileSchema = z.object({
+  fileName: z.string().min(1),
+  mimeType: z.string().min(1),
+  base64Data: z.string().min(1)
+});
+
+app.post("/api/firms/import-file", async (req, res) => {
+  const parsed = importFileSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
     res.status(400).json({ message: parsed.error.flatten() });
     return;
   }
 
   const workspace = store.getActiveWorkspace();
-  const imported = parseFirmsCsv(parsed.data.csv, workspace.id);
+  const parsedImport = parseFirmsFromUpload(
+    parsed.data.base64Data,
+    parsed.data.fileName,
+    parsed.data.mimeType,
+    workspace.id
+  );
 
-  if (parsed.data.mode === "replace") {
-    store.replaceWorkspaceFirms(workspace.id, imported);
-  } else {
-    for (const firm of imported) {
-      store.upsertFirm(firm);
-    }
+  for (const firm of parsedImport.firms) {
+    store.upsertFirm(firm);
   }
 
+  let runId: string | undefined;
+  if (parsedImport.firms.length > 0) {
+    const run = await orchestrator.createRun({
+      initiatedBy: "Background Agent",
+      mode: "production",
+      workspaceId: workspace.id,
+      firmIds: parsedImport.firms.map((firm) => firm.id)
+    });
+    runId = run.id;
+  }
+
+  store.addImportBatch({
+    id: uuid(),
+    workspaceId: workspace.id,
+    sourceName: parsed.data.fileName,
+    sourceType: parsedImport.sourceType,
+    importedCount: parsedImport.firms.length,
+    importedAt: new Date().toISOString(),
+    status: "completed",
+    runId
+  });
+
   await store.persist();
-  res.json({ imported: imported.length, mode: parsed.data.mode });
+  res.json({ imported: parsedImport.firms.length, sourceType: parsedImport.sourceType, runId });
+});
+
+const importDriveSchema = z.object({
+  link: z.string().url()
+});
+
+app.post("/api/firms/import-drive", async (req, res) => {
+  const parsed = importDriveSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ message: parsed.error.flatten() });
+    return;
+  }
+
+  const workspace = store.getActiveWorkspace();
+
+  try {
+    const parsedImport = await parseFirmsFromGoogleDriveLink(parsed.data.link, workspace.id);
+    for (const firm of parsedImport.firms) {
+      store.upsertFirm(firm);
+    }
+
+    let runId: string | undefined;
+    if (parsedImport.firms.length > 0) {
+      const run = await orchestrator.createRun({
+        initiatedBy: "Background Agent",
+        mode: "production",
+        workspaceId: workspace.id,
+        firmIds: parsedImport.firms.map((firm) => firm.id)
+      });
+      runId = run.id;
+    }
+
+    store.addImportBatch({
+      id: uuid(),
+      workspaceId: workspace.id,
+      sourceName: parsed.data.link,
+      sourceType: "google_drive",
+      importedCount: parsedImport.firms.length,
+      importedAt: new Date().toISOString(),
+      status: "completed",
+      runId
+    });
+
+    await store.persist();
+    res.json({ imported: parsedImport.firms.length, sourceType: "google_drive", runId });
+  } catch (error) {
+    store.addImportBatch({
+      id: uuid(),
+      workspaceId: workspace.id,
+      sourceName: parsed.data.link,
+      sourceType: "google_drive",
+      importedCount: 0,
+      importedAt: new Date().toISOString(),
+      status: "failed",
+      note: error instanceof Error ? error.message : "Google Drive import failed"
+    });
+    await store.persist();
+    res.status(400).json({ message: error instanceof Error ? error.message : "Google Drive import failed" });
+  }
 });
 
 app.get("/api/firms/:id", (req, res) => {

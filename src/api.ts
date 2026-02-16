@@ -1,6 +1,7 @@
 import type {
   CampaignRun,
   Firm,
+  ImportBatch,
   OverviewResponse,
   Playbook,
   Profile,
@@ -30,7 +31,7 @@ export function getWorkspaces(): Promise<WorkspacesResponse> {
   return api<WorkspacesResponse>("/api/workspaces");
 }
 
-export function createWorkspace(payload: { name: string; company?: string }): Promise<Workspace> {
+export function createWorkspace(payload: { name: string; company?: string; website?: string }): Promise<Workspace> {
   return api<Workspace>("/api/workspaces", { method: "POST", body: JSON.stringify(payload) });
 }
 
@@ -42,11 +43,26 @@ export function updateWorkspaceProfile(id: string, payload: Partial<Profile>): P
   return api<Workspace>(`/api/workspaces/${id}/profile`, { method: "PATCH", body: JSON.stringify(payload) });
 }
 
-export function importFirmsCsv(payload: { csv: string; mode: "append" | "replace" }): Promise<{ imported: number; mode: string }> {
-  return api<{ imported: number; mode: string }>("/api/firms/import-csv", {
+export function importFirmsFile(payload: {
+  fileName: string;
+  mimeType: string;
+  base64Data: string;
+}): Promise<{ imported: number; sourceType: string; runId?: string }> {
+  return api<{ imported: number; sourceType: string; runId?: string }>("/api/firms/import-file", {
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export function importFirmsFromDrive(link: string): Promise<{ imported: number; sourceType: string; runId?: string }> {
+  return api<{ imported: number; sourceType: string; runId?: string }>("/api/firms/import-drive", {
+    method: "POST",
+    body: JSON.stringify({ link })
+  });
+}
+
+export function getImportBatches(): Promise<ImportBatch[]> {
+  return api<ImportBatch[]>("/api/imports");
 }
 
 export function getSubmissionQueue(): Promise<SubmissionRequest[]> {
