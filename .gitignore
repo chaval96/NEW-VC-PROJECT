@@ -1,0 +1,7 @@
+node_modules
+dist
+dist-server
+server/data/state.json
+.DS_Store
+VC-Outreach-System/
+VC-System-App/
