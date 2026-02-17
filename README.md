@@ -69,6 +69,13 @@ Optional (real verification emails):
 
 - `RESEND_API_KEY`
 - `EMAIL_FROM`
+- `EMAIL_FROM_NAME` (display sender name; defaults to `VCReach`)
+- `EMAIL_BRAND_NAME` (brand label in email template; defaults to `VCReach`)
+- `EMAIL_LOGO_URL` (optional absolute URL; defaults to `${APP_BASE_URL}/branding/vcreach-logo.png`)
+
+Bundled brand asset:
+
+- `public/branding/vcreach-logo.png` (used by the verification email template by default)
 
 Optional (browser automation):
 

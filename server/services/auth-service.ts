@@ -119,6 +119,19 @@ export class AuthService {
     this.memoryUsers.set(user.email, user);
   }
 
+  private cleanEnv(value?: string): string {
+    const trimmed = (value ?? "").trim();
+    if (!trimmed) return "";
+
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === "\"" && last === "\"") || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1).trim();
+    }
+
+    return trimmed;
+  }
+
   private async ensureDefaultOwnerInDb(): Promise<void> {
     if (!this.pool) return;
 
@@ -492,13 +505,103 @@ export class AuthService {
   }
 
   private buildVerificationUrl(token: string): string {
-    const base = process.env.APP_BASE_URL ?? "http://localhost:5173";
+    const base = this.cleanEnv(process.env.APP_BASE_URL) || "http://localhost:5173";
     return `${base.replace(/\/$/, "")}/verify-email?token=${encodeURIComponent(token)}`;
   }
 
+  private composeFromAddress(): string | null {
+    const rawFrom = this.cleanEnv(process.env.EMAIL_FROM);
+    if (!rawFrom) return null;
+
+    if (rawFrom.includes("<") && rawFrom.includes(">")) {
+      return rawFrom;
+    }
+
+    const fromName = this.cleanEnv(process.env.EMAIL_FROM_NAME) || this.cleanEnv(process.env.EMAIL_BRAND_NAME) || "VCReach";
+    if (!fromName) return rawFrom;
+    return `${fromName} <${rawFrom}>`;
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll("\"", "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  private buildVerificationEmailHtml(name: string, verificationUrl: string): string {
+    const safeName = this.escapeHtml(name);
+    const safeLink = this.escapeHtml(verificationUrl);
+    const brandName = this.escapeHtml(this.cleanEnv(process.env.EMAIL_BRAND_NAME) || "VCReach");
+    const appBase = this.cleanEnv(process.env.APP_BASE_URL).replace(/\/$/, "");
+    const defaultLogoUrl = appBase ? `${appBase}/branding/vcreach-logo.png` : "";
+    const logoUrl = this.cleanEnv(process.env.EMAIL_LOGO_URL) || defaultLogoUrl;
+    const logoBlock = logoUrl
+      ? `<img src="${this.escapeHtml(logoUrl)}" alt="${brandName}" width="120" style="display:block;margin:0 auto 16px auto;border:0;outline:none;text-decoration:none;">`
+      : `<div style="display:inline-block;border-radius:10px;padding:8px 12px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:#ffffff;font-size:12px;font-weight:700;letter-spacing:0.4px;margin-bottom:16px;">${brandName}</div>`;
+
+    return `
+<!doctype html>
+<html>
+  <body style="margin:0;background:#f1f5f9;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0f172a;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;margin:0 auto;">
+      <tr>
+        <td style="padding:0;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:28px 24px 20px 24px;text-align:center;background:linear-gradient(180deg,#f8fafc 0%,#ffffff 100%);">
+                ${logoBlock}
+                <div style="font-size:24px;font-weight:700;line-height:1.2;color:#0f172a;">Verify Your ${brandName} Account</div>
+                <p style="margin:10px 0 0 0;font-size:14px;line-height:1.6;color:#475569;">Secure your workspace to start running VC outreach workflows.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 24px 20px 24px;">
+                <p style="margin:0 0 12px 0;font-size:15px;line-height:1.6;color:#0f172a;">Hi ${safeName},</p>
+                <p style="margin:0 0 18px 0;font-size:14px;line-height:1.7;color:#334155;">
+                  Please confirm your email address to activate your ${brandName} account.
+                  This verification link is valid for 24 hours.
+                </p>
+                <div style="text-align:center;padding:6px 0 18px 0;">
+                  <a href="${safeLink}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-weight:600;border-radius:10px;padding:12px 22px;font-size:14px;">Verify Email Address</a>
+                </div>
+                <p style="margin:0 0 10px 0;font-size:12px;line-height:1.6;color:#64748b;">If the button does not work, copy and paste this link into your browser:</p>
+                <p style="margin:0;padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;word-break:break-all;font-size:12px;line-height:1.6;color:#334155;">${safeLink}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:14px 24px 24px 24px;border-top:1px solid #e2e8f0;">
+                <p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">If you did not create this account, you can safely ignore this email.</p>
+                <p style="margin:8px 0 0 0;font-size:12px;line-height:1.6;color:#94a3b8;">© ${new Date().getUTCFullYear()} ${brandName}. All rights reserved.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+    `.trim();
+  }
+
+  private buildVerificationEmailText(name: string, verificationUrl: string): string {
+    const brandName = this.cleanEnv(process.env.EMAIL_BRAND_NAME) || "VCReach";
+    return [
+      `Hi ${name},`,
+      "",
+      `Please verify your email address to activate your ${brandName} account.`,
+      "This verification link is valid for 24 hours:",
+      verificationUrl,
+      "",
+      "If you did not create this account, you can ignore this email."
+    ].join("\n");
+  }
+
   private async sendVerificationEmail(email: string, name: string, verificationUrl: string): Promise<boolean> {
-    const resendKey = process.env.RESEND_API_KEY;
-    const from = process.env.EMAIL_FROM;
+    const resendKey = this.cleanEnv(process.env.RESEND_API_KEY);
+    const from = this.composeFromAddress();
 
     if (!resendKey || !from) {
       console.log(`Verification link for ${email}: ${verificationUrl}`);
@@ -515,8 +618,9 @@ export class AuthService {
         body: JSON.stringify({
           from,
           to: [email],
-          subject: "Verify your VCReach account",
-          html: `<p>Hello ${name},</p><p>Please verify your email to activate your account:</p><p><a href=\"${verificationUrl}\">Verify Email</a></p>`
+          subject: "Action required: verify your VCReach account",
+          html: this.buildVerificationEmailHtml(name, verificationUrl),
+          text: this.buildVerificationEmailText(name, verificationUrl)
         })
       });
 
