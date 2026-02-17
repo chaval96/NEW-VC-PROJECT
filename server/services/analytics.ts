@@ -23,7 +23,7 @@ export function buildOverview(
   events: SubmissionEvent[],
   runs: CampaignRun[],
   requests: SubmissionRequest[]
-): OverviewResponse {
+): Omit<OverviewResponse, "creditBalance"> {
   const attempts = events.length;
   const formsDiscovered = countByPredicate(events, (event) => ["form_discovered", "form_filled", "submitted"].includes(event.status));
   const formsFilled = countByPredicate(events, (event) => ["form_filled", "submitted"].includes(event.status));

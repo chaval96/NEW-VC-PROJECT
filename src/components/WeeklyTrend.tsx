@@ -1,5 +1,5 @@
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { OverviewResponse } from "../types";
+import type { OverviewResponse } from "@shared/types";
 
 interface WeeklyTrendProps {
   data: OverviewResponse["weeklyTrend"];

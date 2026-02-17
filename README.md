@@ -4,8 +4,9 @@ Multi-company internal web app for VC website-form outreach.
 
 ## Core capabilities
 
+- Login/auth protection for internal usage
 - Multiple fundraising projects/workspaces (not WASK-only)
-- Project-first UX: `/projects` -> select project -> project dashboard
+- Project-first UX: `/projects` -> select project -> `/projects/:workspaceId/dashboard`
 - Per-workspace company knowledge base (company, fundraising, metrics)
 - Investor import via CSV/Excel upload and Google Drive link
 - Background agent pipeline for form operations (not exposed in UI)
@@ -18,7 +19,7 @@ Multi-company internal web app for VC website-form outreach.
 1. Create/select workspace (company fundraising project)
 2. Fill company knowledge base
 3. Import investor list (CSV/Excel or Google Drive)
-4. Background run prepares submission requests
+4. Start processing run (`Simulation` or `Live execution`)
 5. Review `pending_approval` queue
 6. Approve/reject one by one
 
@@ -42,6 +43,12 @@ Required:
 - `NODE_ENV=production`
 - `DATABASE_SSL=require`
 - `CORS_ORIGIN=*` (set to real domain later)
+- `AUTH_EMAIL`
+- `AUTH_PASSWORD`
+
+Optional:
+
+- `AUTH_NAME` (display name in app)
 
 Optional for real browser automation:
 
@@ -72,6 +79,9 @@ Optional columns:
 
 ## API highlights
 
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
 - `GET /api/workspaces`
 - `POST /api/workspaces`
 - `POST /api/workspaces/:id/activate`
@@ -91,9 +101,11 @@ Optional columns:
 3. Open latest deployment logs
 4. Validate:
    - `/api/health`
+   - `/login`
    - workspace switch
    - CSV/Excel or Drive import
    - import list history
+   - process run creation
    - queue approve/reject
 
 ## Real submission automation notes

@@ -12,14 +12,22 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/uuid": "^10.0.0",
     "cors": "^2.8.5",
     "dayjs": "^1.11.13",
     "express": "^4.21.2",
+    "openai": "^6.22.0",
     "pg": "^8.13.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-router-dom": "^7.13.0",
     "recharts": "^2.15.1",
+    "stripe": "^20.3.1",
+    "tailwindcss": "^4.1.18",
     "uuid": "^11.0.5",
+    "vitest": "^4.0.18",
     "xlsx": "^0.18.5",
     "zod": "^3.24.2"
   },

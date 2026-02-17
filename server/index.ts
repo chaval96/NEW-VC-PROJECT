@@ -6,17 +6,47 @@ import { z } from "zod";
 import { StateStore } from "./domain/store.js";
 import { buildOverview } from "./services/analytics.js";
 import { CampaignOrchestrator } from "./orchestrator/workflow.js";
-import { batchOne, systemPrompt } from "./domain/playbook.js";
 import { buildTemplateProfile } from "./domain/seed.js";
 import { parseFirmsFromGoogleDriveLink, parseFirmsFromUpload } from "./services/import-parser.js";
 import { executeSubmissionRequest } from "./services/submission-executor.js";
-import type { CompanyProfile, PipelineStage, SubmissionStatus } from "./domain/types.js";
+import { CreditService } from "./services/credit-service.js";
+import { assessInvestors } from "./services/ai-assessor.js";
+import type { AssessmentResult, CompanyProfile, PipelineStage, SubmissionStatus } from "./domain/types.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
 
 const store = new StateStore();
 const orchestrator = new CampaignOrchestrator(store);
+const creditService = new CreditService(store);
+
+type AuthUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: "owner";
+};
+
+const defaultAuthUser: AuthUser = {
+  id: "user_default_owner",
+  email: process.env.AUTH_EMAIL ?? "founder@vcops.local",
+  name: process.env.AUTH_NAME ?? "Founder",
+  role: "owner"
+};
+const defaultAuthPassword = process.env.AUTH_PASSWORD ?? "ChangeMe123!";
+const activeSessions = new Map<string, AuthUser>();
+
+function parseBearerToken(authHeader?: string): string | undefined {
+  if (!authHeader) return undefined;
+  const [scheme, value] = authHeader.split(" ");
+  if (scheme?.toLowerCase() !== "bearer" || !value) return undefined;
+  return value.trim();
+}
+
+type AsyncHandler = (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void>;
+function asyncHandler(fn: AsyncHandler): express.RequestHandler {
+  return (req, res, next) => { fn(req, res, next).catch(next); };
+}
 
 function statusToStage(status: SubmissionStatus): PipelineStage {
   switch (status) {
@@ -47,6 +77,69 @@ app.use(express.json({ limit: "5mb" }));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "fundraising-formops-hub" });
+});
+
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6)
+});
+
+app.post("/api/auth/login", (req, res) => {
+  const parsed = loginSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ message: parsed.error.flatten() });
+    return;
+  }
+
+  const email = parsed.data.email.trim().toLowerCase();
+  if (email !== defaultAuthUser.email.toLowerCase() || parsed.data.password !== defaultAuthPassword) {
+    res.status(401).json({ message: "Invalid credentials" });
+    return;
+  }
+
+  const token = uuid();
+  activeSessions.set(token, defaultAuthUser);
+  res.json({ token, user: defaultAuthUser });
+});
+
+app.use("/api", (req, res, next) => {
+  if (req.method === "OPTIONS") {
+    next();
+    return;
+  }
+
+  if (req.path === "/health" || req.path === "/auth/login") {
+    next();
+    return;
+  }
+
+  const token = parseBearerToken(req.header("authorization"));
+  if (!token) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  const user = activeSessions.get(token);
+  if (!user) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  res.locals.authUser = user;
+  res.locals.authToken = token;
+  next();
+});
+
+app.get("/api/auth/me", (_req, res) => {
+  res.json({ user: res.locals.authUser as AuthUser });
+});
+
+app.post("/api/auth/logout", (_req, res) => {
+  const token = res.locals.authToken as string | undefined;
+  if (token) {
+    activeSessions.delete(token);
+  }
+  res.json({ ok: true });
 });
 
 app.get("/api/workspaces", (_req, res) => {
@@ -145,25 +238,24 @@ app.get("/api/profile", (_req, res) => {
   res.json(store.getActiveWorkspace().profile);
 });
 
-app.get("/api/playbook", (_req, res) => {
-  res.json({ systemPrompt, batchOne });
-});
-
 app.get("/api/dashboard/overview", (_req, res) => {
   const workspace = store.getActiveWorkspace();
-  res.json(
-    buildOverview(
-      workspace,
-      store.listFirms(workspace.id),
-      store.listEvents(workspace.id),
-      store.listRuns(workspace.id),
-      store.listSubmissionRequests(workspace.id)
-    )
+  const overview = buildOverview(
+    workspace,
+    store.listFirms(workspace.id),
+    store.listEvents(workspace.id),
+    store.listRuns(workspace.id),
+    store.listSubmissionRequests(workspace.id)
   );
+  res.json({ ...overview, creditBalance: creditService.getBalance(workspace.id) });
 });
 
 app.get("/api/firms", (_req, res) => {
-  res.json(store.listFirms());
+  const page = Math.max(1, Number(_req.query.page) || 1);
+  const limit = Math.min(200, Math.max(1, Number(_req.query.limit) || 50));
+  const all = store.listFirms();
+  const start = (page - 1) * limit;
+  res.json({ firms: all.slice(start, start + limit), total: all.length });
 });
 
 app.get("/api/imports", (_req, res) => {
@@ -482,6 +574,77 @@ app.post("/api/runs", async (req, res) => {
   res.status(201).json(run);
 });
 
+// ── Credit Routes ──────────────────────────────────────────────────
+app.get("/api/credits/balance", (_req, res) => {
+  const workspace = store.getActiveWorkspace();
+  res.json(creditService.getBalance(workspace.id));
+});
+
+app.get("/api/credits/transactions", (_req, res) => {
+  const workspace = store.getActiveWorkspace();
+  res.json(creditService.listTransactions(workspace.id));
+});
+
+app.post("/api/credits/purchase", asyncHandler(async (req, res) => {
+  const packs = Math.max(1, Number(req.body?.packs) || 1);
+  const workspace = store.getActiveWorkspace();
+  const txn = await creditService.recordPurchase(workspace.id, packs);
+  res.status(201).json({ transaction: txn, balance: creditService.getBalance(workspace.id) });
+}));
+
+// ── Assessment Routes ──────────────────────────────────────────────
+app.post("/api/assess", asyncHandler(async (_req, res) => {
+  const workspace = store.getActiveWorkspace();
+  const firms = store.listFirms(workspace.id);
+  const assessment: AssessmentResult = {
+    id: uuid(),
+    workspaceId: workspace.id,
+    status: "running",
+    startedAt: new Date().toISOString(),
+    matches: [],
+    totalFirmsAnalyzed: firms.length,
+  };
+  store.addAssessment(assessment);
+  await store.persist();
+
+  // Run assessment async
+  assessInvestors(workspace.profile, firms)
+    .then(async (matches) => {
+      for (const match of matches) {
+        const firm = store.getFirm(match.firmId, workspace.id);
+        if (firm) {
+          store.upsertFirm({ ...firm, matchScore: match.score, matchReasoning: match.reasoning });
+        }
+      }
+      store.updateAssessment(assessment.id, (a) => ({
+        ...a, status: "completed", completedAt: new Date().toISOString(), matches,
+      }));
+      await store.persist();
+    })
+    .catch(async (err) => {
+      store.updateAssessment(assessment.id, (a) => ({
+        ...a, status: "failed", completedAt: new Date().toISOString(),
+        error: err instanceof Error ? err.message : "Assessment failed",
+      }));
+      await store.persist();
+    });
+
+  res.status(202).json(assessment);
+}));
+
+app.get("/api/assess/latest", (_req, res) => {
+  const workspace = store.getActiveWorkspace();
+  const latest = store.getLatestAssessment(workspace.id);
+  if (!latest) { res.status(404).json({ message: "No assessment found" }); return; }
+  res.json(latest);
+});
+
+app.get("/api/assess/:id", (req, res) => {
+  const assessment = store.getAssessment(req.params.id);
+  if (!assessment) { res.status(404).json({ message: "Assessment not found" }); return; }
+  res.json(assessment);
+});
+
 if (process.env.NODE_ENV === "production") {
   const distPath = path.resolve(process.cwd(), "dist");
   app.use(express.static(distPath));
@@ -490,10 +653,16 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
+// Global error handler
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("Unhandled error:", err.message);
+  res.status(500).json({ message: err.message || "Internal server error" });
+});
+
 async function start(): Promise<void> {
   await store.init();
   app.listen(port, () => {
-    console.log(`Fundraising FormOps backend listening on http://localhost:${port}`);
+    console.log(`VCReach backend listening on http://localhost:${port}`);
   });
 }
 

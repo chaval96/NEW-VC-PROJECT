@@ -209,6 +209,8 @@ export function createSeedState(): AppState {
     importBatches: [],
     tasks: [],
     runs: [],
-    logs: []
+    logs: [],
+    creditTransactions: [],
+    assessments: []
   };
 }

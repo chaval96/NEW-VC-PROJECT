@@ -3,18 +3,7 @@ import path from "node:path";
 import { Pool } from "pg";
 import { v4 as uuid } from "uuid";
 import { buildTemplateProfile, createSeedState, createWorkspace } from "./seed.js";
-import type {
-  AppState,
-  AgentTaskResult,
-  CampaignRun,
-  CompanyProfile,
-  Firm,
-  ImportBatch,
-  RunLog,
-  SubmissionEvent,
-  SubmissionRequest,
-  Workspace
-} from "./types.js";
+import type { AppState, AgentTaskResult, AssessmentResult, CampaignRun, CompanyProfile, CreditTransaction, Firm, ImportBatch, RunLog, SubmissionEvent, SubmissionRequest, Workspace } from "./types.js";
 
 const dataDir = path.resolve("server/data");
 const dataPath = path.join(dataDir, "state.json");
@@ -65,7 +54,9 @@ function migrateLegacyState(raw: any): AppState {
       : [],
     logs: Array.isArray(raw?.logs)
       ? raw.logs.map((log: any) => ({ ...log, workspaceId, id: log.id ?? uuid() }))
-      : []
+      : [],
+    creditTransactions: [],
+    assessments: []
   };
 }
 
@@ -86,6 +77,12 @@ export class StateStore {
       this.state = migrateLegacyState(JSON.parse(raw));
       if (!Array.isArray((this.state as any).importBatches)) {
         (this.state as any).importBatches = [];
+      }
+      if (!Array.isArray((this.state as any).creditTransactions)) {
+        (this.state as any).creditTransactions = [];
+      }
+      if (!Array.isArray((this.state as any).assessments)) {
+        (this.state as any).assessments = [];
       }
       if (this.state.workspaces.length === 0) {
         this.state = createSeedState();
@@ -294,6 +291,34 @@ export class StateStore {
 
   listLogsByRun(runId: string, workspaceId = this.state.activeWorkspaceId): RunLog[] {
     return this.state.logs.filter((log) => log.workspaceId === workspaceId && log.runId === runId);
+  }
+
+  addCreditTransaction(txn: CreditTransaction): void {
+    this.state.creditTransactions.unshift(txn);
+  }
+
+  listCreditTransactions(workspaceId: string): CreditTransaction[] {
+    return this.state.creditTransactions.filter((t) => t.workspaceId === workspaceId);
+  }
+
+  addAssessment(assessment: AssessmentResult): void {
+    this.state.assessments.unshift(assessment);
+  }
+
+  getAssessment(id: string): AssessmentResult | undefined {
+    return this.state.assessments.find((a) => a.id === id);
+  }
+
+  getLatestAssessment(workspaceId: string): AssessmentResult | undefined {
+    return this.state.assessments.find((a) => a.workspaceId === workspaceId);
+  }
+
+  updateAssessment(id: string, updater: (a: AssessmentResult) => AssessmentResult): AssessmentResult | undefined {
+    const idx = this.state.assessments.findIndex((a) => a.id === id);
+    if (idx === -1) return undefined;
+    const updated = updater(this.state.assessments[idx]);
+    this.state.assessments[idx] = updated;
+    return updated;
   }
 
   async persist(): Promise<void> {

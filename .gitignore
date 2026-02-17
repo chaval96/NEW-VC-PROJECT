@@ -3,5 +3,7 @@ dist
 dist-server
 server/data/state.json
 .DS_Store
+.claude/
+tmp/
 VC-Outreach-System/
 VC-System-App/

@@ -1,5 +1,5 @@
 import dayjs from "dayjs";
-import type { SubmissionEvent } from "../types";
+import type { SubmissionEvent } from "@shared/types";
 
 interface ActivityTableProps {
   events: SubmissionEvent[];

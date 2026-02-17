@@ -8,10 +8,10 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "outDir": "dist-server",
-    "rootDir": "server",
+    "rootDir": ".",
     "types": ["node"],
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["server/**/*.ts"]
+  "include": ["server/**/*.ts", "shared/**/*.ts"]
 }

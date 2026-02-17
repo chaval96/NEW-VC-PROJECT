@@ -1,5 +1,5 @@
 import dayjs from "dayjs";
-import type { Firm } from "../types";
+import type { Firm } from "@shared/types";
 
 interface FirmPipelineTableProps {
   firms: Firm[];
