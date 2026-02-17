@@ -1,27 +1,79 @@
-# Fundraising Operations Hub
+# VCReach FormOps
 
-Multi-company internal web app for VC website-form outreach.
+Project-based web app for startup fundraising teams to automate VC website-form outreach with AI agents, while keeping human approval and full tracking.
 
-## Core capabilities
+## Product scope (v1)
 
-- Login/auth protection for internal usage
-- Multiple fundraising projects/workspaces (not WASK-only)
-- Project-first UX: `/projects` -> select project -> `/projects/:workspaceId/dashboard`
-- Per-workspace company knowledge base (company, fundraising, metrics)
-- Investor import via CSV/Excel upload and Google Drive link
-- Background agent pipeline for form operations (not exposed in UI)
+- Signup + login with email verification
+- Multi-project workspace model (one account can manage multiple startup raises)
+- Company knowledge base per project (company, metrics, fundraising, contact profile)
+- Investor import (CSV/XLSX and Google Drive)
+- Agent processing runs (`dry_run` or `production`)
 - Human approval queue before final submission
-- Playwright-ready execution hook for real website form automation
-- Dashboard metrics and audit logs
+- Visual dashboard for funnel, trend, pipeline, and activity logs
 
-## Current workflow
+## Main app routes
 
-1. Create/select workspace (company fundraising project)
-2. Fill company knowledge base
-3. Import investor list (CSV/Excel or Google Drive)
-4. Start processing run (`Simulation` or `Live execution`)
-5. Review `pending_approval` queue
-6. Approve/reject one by one
+- `/login` (login + signup)
+- `/verify-email?token=...` (email verification)
+- `/projects`
+- `/projects/:workspaceId/onboarding`
+- `/projects/:workspaceId/dashboard`
+
+## Backend architecture
+
+- Express API + Vite React frontend
+- `StateStore` for operational campaign data
+- `AuthService` for users, sessions, verification tokens, and workspace memberships
+- `CampaignOrchestrator` + agents for form workflow execution
+
+## Database structure
+
+Production auth/access tables are defined in:
+
+- `server/db/schema.sql`
+
+Tables:
+
+- `users`
+- `email_verification_tokens`
+- `auth_sessions`
+- `workspace_memberships`
+- `audit_logs`
+- `projects`
+- `investors`
+- `investor_import_batches`
+- `processing_runs`
+- `submission_requests_operational`
+- `submission_events_operational`
+
+These are initialized automatically on server boot when `DATABASE_URL` is set.
+
+## Environment variables
+
+Required:
+
+- `DATABASE_URL`
+- `NODE_ENV=production`
+- `DATABASE_SSL=require`
+- `CORS_ORIGIN=*` (tighten for production)
+- `APP_BASE_URL` (used in verification links)
+
+Recommended:
+
+- `AUTH_EMAIL`
+- `AUTH_PASSWORD`
+- `AUTH_NAME`
+
+Optional (real verification emails):
+
+- `RESEND_API_KEY`
+- `EMAIL_FROM`
+
+Optional (browser automation):
+
+- `PLAYWRIGHT_ENABLED=true`
+- `PLAYWRIGHT_SUBMIT_ENABLED=true`
 
 ## Local development
 
@@ -33,82 +85,42 @@ npm run dev
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:8787`
 
-## Railway deploy
-
-### Variables
-
-Required:
-
-- `DATABASE_URL` (reference to Railway Postgres)
-- `NODE_ENV=production`
-- `DATABASE_SSL=require`
-- `CORS_ORIGIN=*` (set to real domain later)
-- `AUTH_EMAIL`
-- `AUTH_PASSWORD`
-
-Optional:
-
-- `AUTH_NAME` (display name in app)
-
-Optional for real browser automation:
-
-- `PLAYWRIGHT_ENABLED=true`
-- `PLAYWRIGHT_SUBMIT_ENABLED=true`
-
-### Build
-
-- Builder: Dockerfile
-- Dockerfile path: `Dockerfile`
-- Root directory: repo root
-
-`railway.json` already forces Dockerfile build.
-
-## CSV format
-
-At minimum, include columns:
-
-- `name` (or `company` / `firm`)
-- `website` (or `domain` / `url`)
-
-Optional columns:
-
-- `location`
-- `investor_type`
-- `check_size_range`
-- `focus_sectors` (comma or semicolon separated)
-
 ## API highlights
 
+Auth:
+
+- `POST /api/auth/signup`
+- `POST /api/auth/verify-email`
 - `POST /api/auth/login`
 - `GET /api/auth/me`
 - `POST /api/auth/logout`
+
+Workspace + operations:
+
 - `GET /api/workspaces`
 - `POST /api/workspaces`
 - `POST /api/workspaces/:id/activate`
 - `PATCH /api/workspaces/:id/profile`
-- `POST /api/firms/import-file`
-- `POST /api/firms/import-drive`
-- `GET /api/imports`
-- `GET /api/submissions/queue`
-- `POST /api/submissions/:id/approve`
-- `POST /api/submissions/:id/reject`
-- `POST /api/runs`
+- `GET /api/dashboard/overview?workspaceId=...`
+- `GET /api/firms?workspaceId=...`
+- `POST /api/firms/import-file?workspaceId=...`
+- `POST /api/firms/import-drive?workspaceId=...`
+- `GET /api/submissions/queue?workspaceId=...`
+- `POST /api/submissions/:id/approve?workspaceId=...`
+- `POST /api/submissions/:id/reject?workspaceId=...`
+- `POST /api/runs` (body includes `workspaceId`)
 
-## How to deploy updates (every time)
+## Deploy checklist (Railway)
 
-1. Commit and push code from GitHub Desktop
-2. Railway auto-deploys from connected repo
-3. Open latest deployment logs
-4. Validate:
+1. Push latest commit to `main`.
+2. Confirm service source points to this repo/branch.
+3. Set required env vars.
+4. Deploy and verify:
    - `/api/health`
-   - `/login`
-   - workspace switch
-   - CSV/Excel or Drive import
-   - import list history
-   - process run creation
-   - queue approve/reject
-
-## Real submission automation notes
-
-`SubmissionExecutor` supports Playwright through dynamic import. If Playwright is not installed or enabled, it safely falls back to simulation.
-For full real execution in production, install Playwright and enable both Playwright env vars.
+   - signup
+   - email verification
+   - login
+   - project creation/open
+   - investor import
+   - processing run
+   - approval queue actions

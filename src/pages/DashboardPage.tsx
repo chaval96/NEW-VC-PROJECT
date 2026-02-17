@@ -71,14 +71,15 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
   const [notice, setNotice] = useState<string>();
 
   const refresh = useCallback(async () => {
+    if (!workspaceId) return;
     setError(undefined);
     try {
       const [ov, allFirms, p, q, im] = await Promise.all([
-        getOverview(),
-        getFirms(),
-        getProfile(),
-        getSubmissionQueue(),
-        getImportBatches()
+        getOverview(workspaceId),
+        getFirms(workspaceId),
+        getProfile(workspaceId),
+        getSubmissionQueue(workspaceId),
+        getImportBatches(workspaceId)
       ]);
 
       setOverview(ov);
@@ -93,7 +94,7 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [workspaceId]);
 
   useEffect(() => {
     if (!workspaceId) {
@@ -114,12 +115,18 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
   }, [workspaceId, navigate, refresh]);
 
   const onUpload = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    if (!workspaceId) return;
     const file = event.target.files?.[0];
     if (!file) return;
 
     try {
       const b64 = await fileToBase64(file);
-      const result = await importFirmsFile({ fileName: file.name, mimeType: file.type || "application/octet-stream", base64Data: b64 });
+      const result = await importFirmsFile({
+        workspaceId,
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        base64Data: b64
+      });
       setNotice(`Imported ${result.imported} investors from ${file.name}`);
       await refresh();
     } catch (err) {
@@ -130,9 +137,10 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
   };
 
   const onDriveImport = async (): Promise<void> => {
+    if (!workspaceId) return;
     if (!driveLink.trim()) return;
     try {
-      const result = await importFirmsFromDrive(driveLink.trim());
+      const result = await importFirmsFromDrive(workspaceId, driveLink.trim());
       setNotice(`Imported ${result.imported} investors from Google Drive`);
       setDriveLink("");
       await refresh();
@@ -142,9 +150,10 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
   };
 
   const onApprove = async (id: string): Promise<void> => {
+    if (!workspaceId) return;
     setBusyId(id);
     try {
-      await approveSubmission(id, user.name);
+      await approveSubmission(workspaceId, id, user.name);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Approve failed");
@@ -154,9 +163,10 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
   };
 
   const onReject = async (id: string): Promise<void> => {
+    if (!workspaceId) return;
     setBusyId(id);
     try {
-      await rejectSubmission(id, user.name, "Rejected by operator");
+      await rejectSubmission(workspaceId, id, user.name, "Rejected by operator");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reject failed");

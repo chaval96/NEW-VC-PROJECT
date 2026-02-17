@@ -1,12 +1,14 @@
+import { Suspense, lazy, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { useEffect, useState } from "react";
 import { clearAuthToken, getAuthToken, getMe, login, logout, setAuthToken } from "./api";
 import { Navbar } from "./components/Navbar";
-import { DashboardPage } from "./pages/DashboardPage";
-import { LoginPage } from "./pages/LoginPage";
-import { OnboardingPage } from "./pages/OnboardingPage";
-import { ProjectsPage } from "./pages/ProjectsPage";
 import type { AuthUser } from "./types";
+
+const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ default: module.LoginPage })));
+const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage").then((module) => ({ default: module.VerifyEmailPage })));
+const ProjectsPage = lazy(() => import("./pages/ProjectsPage").then((module) => ({ default: module.ProjectsPage })));
+const OnboardingPage = lazy(() => import("./pages/OnboardingPage").then((module) => ({ default: module.OnboardingPage })));
+const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
 
 function ProtectedRoute({ user, children }: { user: AuthUser | null; children: JSX.Element }): JSX.Element {
   if (!user) {
@@ -64,37 +66,40 @@ function App(): JSX.Element {
     <BrowserRouter>
       <div className="min-h-screen bg-slate-50">
         {authUser ? <Navbar user={authUser} onLogout={handleLogout} /> : null}
-        <Routes>
-          <Route path="/login" element={authUser ? <Navigate to="/projects" replace /> : <LoginPage onLogin={handleLogin} />} />
+        <Suspense fallback={<div className="min-h-screen bg-slate-50" />}>
+          <Routes>
+            <Route path="/login" element={authUser ? <Navigate to="/projects" replace /> : <LoginPage onLogin={handleLogin} />} />
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
 
-          <Route
-            path="/projects"
-            element={
-              <ProtectedRoute user={authUser}>
-                <ProjectsPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/projects/:workspaceId/onboarding"
-            element={
-              <ProtectedRoute user={authUser}>
-                <OnboardingPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/projects/:workspaceId/dashboard"
-            element={
-              <ProtectedRoute user={authUser}>
-                <DashboardPage user={authUser as AuthUser} />
-              </ProtectedRoute>
-            }
-          />
+            <Route
+              path="/projects"
+              element={
+                <ProtectedRoute user={authUser}>
+                  <ProjectsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:workspaceId/onboarding"
+              element={
+                <ProtectedRoute user={authUser}>
+                  <OnboardingPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:workspaceId/dashboard"
+              element={
+                <ProtectedRoute user={authUser}>
+                  <DashboardPage user={authUser as AuthUser} />
+                </ProtectedRoute>
+              }
+            />
 
-          <Route path="/" element={<Navigate to={authUser ? "/projects" : "/login"} replace />} />
-          <Route path="*" element={<Navigate to={authUser ? "/projects" : "/login"} replace />} />
-        </Routes>
+            <Route path="/" element={<Navigate to={authUser ? "/projects" : "/login"} replace />} />
+            <Route path="*" element={<Navigate to={authUser ? "/projects" : "/login"} replace />} />
+          </Routes>
+        </Suspense>
       </div>
     </BrowserRouter>
   );

@@ -74,7 +74,7 @@ export function OnboardingPage(): JSX.Element {
     const load = async (): Promise<void> => {
       try {
         await activateWorkspace(workspaceId);
-        const existing = await getProfile();
+        const existing = await getProfile(workspaceId);
         setProfile(existing);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load project");
@@ -101,12 +101,18 @@ export function OnboardingPage(): JSX.Element {
   };
 
   const onUpload = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    if (!workspaceId) return;
     const file = event.target.files?.[0];
     if (!file) return;
 
     try {
       const base64Data = await fileToBase64(file);
-      await importFirmsFile({ fileName: file.name, mimeType: file.type || "application/octet-stream", base64Data });
+      await importFirmsFile({
+        workspaceId,
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        base64Data
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -115,9 +121,10 @@ export function OnboardingPage(): JSX.Element {
   };
 
   const onImportDrive = async (): Promise<void> => {
+    if (!workspaceId) return;
     if (!driveLink.trim()) return;
     try {
-      await importFirmsFromDrive(driveLink.trim());
+      await importFirmsFromDrive(workspaceId, driveLink.trim());
       setDriveLink("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Google Drive import failed");
@@ -239,7 +246,7 @@ export function OnboardingPage(): JSX.Element {
             <div className="space-y-4">
               <h2 className="text-lg font-semibold">Import Investor Lists</h2>
               <p className="text-sm text-slate-500">
-                Upload CSV/Excel files or connect a Google Drive file. Imported firms will be queued for background processing.
+                Upload CSV/Excel files or connect a Google Drive file. You can start processing later from the dashboard.
               </p>
 
               <label className="flex cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-8 transition-colors hover:border-primary-400">
