@@ -43,9 +43,12 @@
 }
 
 body {
-  background-color: var(--surface-secondary);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(37, 99, 235, 0.08), transparent 40%),
+    radial-gradient(circle at 100% 0%, rgba(15, 23, 42, 0.06), transparent 36%),
+    var(--surface-secondary);
   color: var(--text-body);
-  font-family: "Inter", "IBM Plex Sans", system-ui, sans-serif;
+  font-family: "Manrope", "Avenir Next", "IBM Plex Sans", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   transition: background-color 0.15s ease, color 0.15s ease;

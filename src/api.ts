@@ -1,4 +1,5 @@
 import type {
+  AuthForgotPasswordResponse,
   AuthLoginResponse,
   AuthResendVerificationResponse,
   AuthSignupResponse,
@@ -8,7 +9,10 @@ import type {
   ImportBatch,
   OverviewResponse,
   Profile,
+  RunDetail,
+  SubmissionDetail,
   SubmissionRequest,
+  WorkspaceReadiness,
   Workspace,
   WorkspacesResponse
 } from "./types";
@@ -62,6 +66,40 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function apiBlob(path: string, init?: RequestInit): Promise<{ blob: Blob; fileName: string }> {
+  const token = getAuthToken();
+  const headers = new Headers(init?.headers ?? {});
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const response = await fetch(path, { ...init, headers });
+  if (!response.ok) {
+    let message = `Request failed: ${response.status}`;
+    try {
+      const body = (await response.json()) as { message?: string };
+      if (body.message) message = body.message;
+    } catch {
+      // ignore parse errors
+    }
+    throw new Error(message);
+  }
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const fileMatch = disposition.match(/filename="?([^"]+)"?/i);
+  const fileName = fileMatch?.[1] ?? "export.csv";
+  return { blob: await response.blob(), fileName };
+}
+
+export function triggerCsvDownload(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export function signup(payload: { name: string; email: string; password: string }): Promise<AuthSignupResponse> {
   return api<AuthSignupResponse>("/api/auth/signup", {
     method: "POST",
@@ -83,6 +121,20 @@ export function resendVerification(email: string): Promise<AuthResendVerificatio
   });
 }
 
+export function forgotPassword(email: string): Promise<AuthForgotPasswordResponse> {
+  return api<AuthForgotPasswordResponse>("/api/auth/forgot-password", {
+    method: "POST",
+    body: JSON.stringify({ email })
+  });
+}
+
+export function resetPassword(token: string, password: string): Promise<{ ok: true; message: string }> {
+  return api<{ ok: true; message: string }>("/api/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token, password })
+  });
+}
+
 export function login(email: string, password: string): Promise<AuthLoginResponse> {
   return api<AuthLoginResponse>("/api/auth/login", {
     method: "POST",
@@ -92,6 +144,20 @@ export function login(email: string, password: string): Promise<AuthLoginRespons
 
 export function getMe(): Promise<{ user: AuthUser }> {
   return api<{ user: AuthUser }>("/api/auth/me");
+}
+
+export function updateMyProfile(payload: { name: string }): Promise<{ user: AuthUser }> {
+  return api<{ user: AuthUser }>("/api/auth/profile", {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function changeMyPassword(payload: { currentPassword: string; newPassword: string }): Promise<{ ok: true; message: string }> {
+  return api<{ ok: true; message: string }>("/api/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 export function logout(): Promise<{ ok: true }> {
@@ -118,6 +184,10 @@ export function updateWorkspaceProfile(id: string, payload: Partial<Profile>): P
     method: "PATCH",
     body: JSON.stringify(payload)
   });
+}
+
+export function getWorkspaceReadiness(workspaceId: string): Promise<WorkspaceReadiness> {
+  return api<WorkspaceReadiness>(`/api/workspaces/${workspaceId}/readiness`);
 }
 
 export function getOverview(workspaceId: string): Promise<OverviewResponse> {
@@ -161,6 +231,10 @@ export function getSubmissionQueue(workspaceId: string): Promise<SubmissionReque
   return api<SubmissionRequest[]>(withWorkspace("/api/submissions/queue", workspaceId));
 }
 
+export function getSubmissionDetail(workspaceId: string, requestId: string): Promise<SubmissionDetail> {
+  return api<SubmissionDetail>(withWorkspace(`/api/submissions/${requestId}`, workspaceId));
+}
+
 export function approveSubmission(workspaceId: string, requestId: string, approvedBy: string): Promise<{ request: SubmissionRequest }> {
   return api<{ request: SubmissionRequest }>(withWorkspace(`/api/submissions/${requestId}/approve`, workspaceId), {
     method: "POST",
@@ -175,8 +249,41 @@ export function rejectSubmission(workspaceId: string, requestId: string, rejecte
   });
 }
 
+export function bulkApproveSubmissions(
+  workspaceId: string,
+  requestIds: string[],
+  approvedBy: string
+): Promise<{ processed: number; approved: number; failed: Array<{ id: string; message: string }> }> {
+  return api<{ processed: number; approved: number; failed: Array<{ id: string; message: string }> }>(
+    withWorkspace("/api/submissions/actions/bulk-approve", workspaceId),
+    {
+      method: "POST",
+      body: JSON.stringify({ ids: requestIds, approvedBy })
+    }
+  );
+}
+
+export function bulkRejectSubmissions(
+  workspaceId: string,
+  requestIds: string[],
+  rejectedBy: string,
+  reason: string
+): Promise<{ processed: number; rejected: number; failed: Array<{ id: string; message: string }> }> {
+  return api<{ processed: number; rejected: number; failed: Array<{ id: string; message: string }> }>(
+    withWorkspace("/api/submissions/actions/bulk-reject", workspaceId),
+    {
+      method: "POST",
+      body: JSON.stringify({ ids: requestIds, rejectedBy, reason })
+    }
+  );
+}
+
 export function getRuns(workspaceId: string): Promise<CampaignRun[]> {
   return api<CampaignRun[]>(withWorkspace("/api/runs", workspaceId));
+}
+
+export function getRunDetail(workspaceId: string, runId: string): Promise<RunDetail> {
+  return api<RunDetail>(withWorkspace(`/api/runs/${runId}`, workspaceId));
 }
 
 export function createRun(payload: {
@@ -189,4 +296,14 @@ export function createRun(payload: {
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export async function exportFirmsCsv(workspaceId: string): Promise<void> {
+  const result = await apiBlob(withWorkspace("/api/export/firms.csv", workspaceId));
+  triggerCsvDownload(result.blob, result.fileName);
+}
+
+export async function exportSubmissionsCsv(workspaceId: string): Promise<void> {
+  const result = await apiBlob(withWorkspace("/api/export/submissions.csv", workspaceId));
+  triggerCsvDownload(result.blob, result.fileName);
 }

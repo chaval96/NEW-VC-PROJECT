@@ -45,20 +45,42 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
   const [success, setSuccess] = useState<string>();
   const [verificationUrl, setVerificationUrl] = useState<string>();
   const [resending, setResending] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<{
+    name?: string;
+    email?: string;
+    password?: string;
+    confirmPassword?: string;
+  }>({});
+
+  const resetFieldErrors = (): void => {
+    setFieldErrors({});
+  };
+
+  const validateForm = (): boolean => {
+    const nextErrors: typeof fieldErrors = {};
+
+    if (mode === "signup" && name.trim().length < 2) {
+      nextErrors.name = "Full name must be at least 2 characters.";
+    }
+    if (!isAllowedAuthEmail(email)) {
+      nextErrors.email = "Please enter a valid email address.";
+    }
+    if (password.length < 8) {
+      nextErrors.password = "Password must be at least 8 characters.";
+    }
+    if (mode === "signup" && confirmPassword !== password) {
+      nextErrors.confirmPassword = "Passwords do not match.";
+    }
+
+    setFieldErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  };
 
   const handleLogin = async (): Promise<void> => {
     await onLogin(email.trim(), password);
   };
 
   const handleSignup = async (): Promise<void> => {
-    if (!isAllowedAuthEmail(email)) {
-      throw new Error("Email is invalid. Please enter a valid email address.");
-    }
-
-    if (password !== confirmPassword) {
-      throw new Error("Passwords do not match");
-    }
-
     const response = await signup({
       name: name.trim(),
       email: email.trim(),
@@ -79,6 +101,12 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
     setError(undefined);
     setSuccess(undefined);
     setVerificationUrl(undefined);
+    resetFieldErrors();
+
+    if (!validateForm()) {
+      setSubmitting(false);
+      return;
+    }
 
     try {
       if (mode === "login") {
@@ -96,10 +124,12 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
   const handleResendVerification = async (): Promise<void> => {
     if (email.trim().length === 0) {
       setError("Please enter your email first");
+      setFieldErrors({ email: "Email is required." });
       return;
     }
     if (!isAllowedAuthEmail(email)) {
       setError("Email is invalid. Please enter a valid email address.");
+      setFieldErrors({ email: "Please enter a valid email address." });
       return;
     }
 
@@ -107,6 +137,7 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
     setError(undefined);
     setSuccess(undefined);
     setVerificationUrl(undefined);
+    resetFieldErrors();
 
     try {
       const response = await resendVerification(email.trim());
@@ -153,8 +184,14 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
                 <Input
                   label="Full Name"
                   value={name}
-                  onChange={(event) => setName(event.target.value)}
+                  onChange={(event) => {
+                    setName(event.target.value);
+                    if (fieldErrors.name) {
+                      setFieldErrors((prev) => ({ ...prev, name: undefined }));
+                    }
+                  }}
                   placeholder="Utku Bozkurt"
+                  error={fieldErrors.name}
                   required
                 />
               ) : null}
@@ -163,8 +200,14 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
                 label="Email"
                 type="email"
                 value={email}
-                onChange={(event) => setEmail(event.target.value)}
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  if (fieldErrors.email) {
+                    setFieldErrors((prev) => ({ ...prev, email: undefined }));
+                  }
+                }}
                 placeholder="founder@startup.com"
+                error={fieldErrors.email}
                 required
               />
 
@@ -172,8 +215,14 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
                 label="Password"
                 type="password"
                 value={password}
-                onChange={(event) => setPassword(event.target.value)}
+                onChange={(event) => {
+                  setPassword(event.target.value);
+                  if (fieldErrors.password) {
+                    setFieldErrors((prev) => ({ ...prev, password: undefined }));
+                  }
+                }}
                 placeholder="At least 8 characters"
+                error={fieldErrors.password}
                 required
               />
 
@@ -182,8 +231,14 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
                   label="Confirm Password"
                   type="password"
                   value={confirmPassword}
-                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  onChange={(event) => {
+                    setConfirmPassword(event.target.value);
+                    if (fieldErrors.confirmPassword) {
+                      setFieldErrors((prev) => ({ ...prev, confirmPassword: undefined }));
+                    }
+                  }}
                   placeholder="Repeat password"
+                  error={fieldErrors.confirmPassword}
                   required
                 />
               ) : null}
@@ -193,7 +248,7 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
 
               {verificationUrl ? (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                  Development verification link: <a className="font-medium underline" href={verificationUrl}>{verificationUrl}</a>
+                  Verification link: <a className="font-medium underline" href={verificationUrl}>{verificationUrl}</a>
                 </div>
               ) : null}
 
@@ -222,6 +277,10 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
               >
                 {resending ? "Sending verification..." : "Resend verification email"}
               </button>
+
+              <div className="text-xs text-slate-400">
+                <Link className="text-primary-700 hover:underline" to="/forgot-password">Forgot password?</Link>
+              </div>
 
               <div className="text-xs text-slate-400">
                 Already have a token link? <Link className="text-primary-700 hover:underline" to="/verify-email">Open verify page</Link>

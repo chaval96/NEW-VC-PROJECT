@@ -14,7 +14,7 @@ export function Navbar({ user, onLogout }: NavbarProps): JSX.Element {
   const workspaceId = workspaceMatch?.[1] ?? location.pathname.match(/^\/projects\/([^/]+)/)?.[1];
 
   const navLink = (to: string, label: string): JSX.Element => {
-    const active = location.pathname === to;
+    const active = location.pathname === to || location.pathname.startsWith(`${to}/`);
     return (
       <Link
         to={to}
@@ -36,7 +36,7 @@ export function Navbar({ user, onLogout }: NavbarProps): JSX.Element {
           <Link to="/projects" className="text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100">
             VC<span className="text-primary-600 dark:text-primary-400">Reach</span>
           </Link>
-          <div className="hidden md:flex items-center gap-1">
+          <div className="hidden items-center gap-1 md:flex">
             {navLink("/projects", "Projects")}
             {workspaceId ? navLink(`/projects/${workspaceId}/dashboard`, "Dashboard") : null}
             {workspaceId ? navLink(`/projects/${workspaceId}/operations`, "Operations") : null}

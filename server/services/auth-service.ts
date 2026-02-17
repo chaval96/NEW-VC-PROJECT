@@ -34,6 +34,12 @@ interface ResendVerificationResult {
   alreadyVerified: boolean;
 }
 
+interface PasswordResetRequestResult {
+  email: string;
+  resetEmailSent: boolean;
+  resetUrl?: string;
+}
+
 class AuthError extends Error {
   status: number;
 
@@ -45,6 +51,7 @@ class AuthError extends Error {
 
 const SESSION_TTL_DAYS = 14;
 const VERIFICATION_TTL_HOURS = 24;
+const PASSWORD_RESET_TTL_HOURS = 2;
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -88,6 +95,7 @@ export class AuthService {
   private readonly memorySessions = new Map<string, AuthUser>();
   private readonly memoryMemberships = new Map<string, Set<string>>();
   private readonly memoryVerificationTokens = new Map<string, { userId: string; expiresAt: number; used: boolean }>();
+  private readonly memoryPasswordResetTokens = new Map<string, { userId: string; expiresAt: number; used: boolean }>();
 
   private readonly defaultEmail = normalizeEmail(process.env.AUTH_EMAIL ?? "founder@vcops.local");
   private readonly defaultPassword = process.env.AUTH_PASSWORD ?? "ChangeMe123!";
@@ -443,6 +451,178 @@ export class AuthService {
     this.memorySessions.delete(hashed);
   }
 
+  async getUserById(userId: string): Promise<AuthUser | null> {
+    if (this.pool) {
+      const result = await this.pool.query<AuthUserRecord>(
+        `SELECT id, email, password_hash, name, role, email_verified_at FROM users WHERE id = $1 LIMIT 1`,
+        [userId]
+      );
+      const row = result.rows[0];
+      return row ? toAuthUser(row) : null;
+    }
+
+    const row = [...this.memoryUsers.values()].find((entry) => entry.id === userId);
+    return row ? toAuthUser(row) : null;
+  }
+
+  async updateProfile(userId: string, payload: { name?: string }): Promise<AuthUser> {
+    const nextName = payload.name?.trim();
+    if (!nextName || nextName.length < 2) {
+      throw new AuthError(400, "Name must be at least 2 characters");
+    }
+
+    if (this.pool) {
+      const result = await this.pool.query<AuthUserRecord>(
+        `UPDATE users
+         SET name = $2, updated_at = NOW()
+         WHERE id = $1
+         RETURNING id, email, password_hash, name, role, email_verified_at`,
+        [userId, nextName]
+      );
+      const row = result.rows[0];
+      if (!row) {
+        throw new AuthError(404, "User not found");
+      }
+      await this.writeAudit({ userId, action: "auth.profile_updated", entityType: "user", entityId: userId, metadata: { name: nextName } });
+      return toAuthUser(row);
+    }
+
+    const row = [...this.memoryUsers.values()].find((entry) => entry.id === userId);
+    if (!row) throw new AuthError(404, "User not found");
+    row.name = nextName;
+    return toAuthUser(row);
+  }
+
+  async changePassword(userId: string, currentPassword: string, nextPassword: string): Promise<void> {
+    if (nextPassword.length < 8) {
+      throw new AuthError(400, "New password must be at least 8 characters");
+    }
+
+    if (this.pool) {
+      const result = await this.pool.query<AuthUserRecord>(
+        `SELECT id, email, password_hash, name, role, email_verified_at FROM users WHERE id = $1 LIMIT 1`,
+        [userId]
+      );
+      const row = result.rows[0];
+      if (!row) throw new AuthError(404, "User not found");
+      if (!verifyPassword(currentPassword, row.password_hash)) {
+        throw new AuthError(401, "Current password is incorrect");
+      }
+
+      await this.pool.query(`UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`, [userId, passwordHash(nextPassword)]);
+      await this.pool.query(`UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1`, [userId]);
+      await this.writeAudit({ userId, action: "auth.password_changed", entityType: "user", entityId: userId });
+      return;
+    }
+
+    const row = [...this.memoryUsers.values()].find((entry) => entry.id === userId);
+    if (!row) throw new AuthError(404, "User not found");
+    if (!verifyPassword(currentPassword, row.password_hash)) {
+      throw new AuthError(401, "Current password is incorrect");
+    }
+    row.password_hash = passwordHash(nextPassword);
+  }
+
+  async requestPasswordReset(emailInput: string): Promise<PasswordResetRequestResult> {
+    const email = normalizeEmail(emailInput);
+
+    if (this.pool) {
+      const result = await this.pool.query<AuthUserRecord>(
+        `SELECT id, email, password_hash, name, role, email_verified_at FROM users WHERE email = $1 LIMIT 1`,
+        [email]
+      );
+      const row = result.rows[0];
+      if (!row) {
+        return { email, resetEmailSent: false };
+      }
+
+      const resetToken = randomBytes(32).toString("hex");
+      await this.pool.query(
+        `INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at)
+         VALUES ($1, $2, $3, NOW() + INTERVAL '${PASSWORD_RESET_TTL_HOURS} hours')`,
+        [uuid(), row.id, tokenHash(resetToken)]
+      );
+
+      const resetUrl = this.buildPasswordResetUrl(resetToken);
+      const sent = await this.sendPasswordResetEmail(row.email, row.name, resetUrl);
+      await this.writeAudit({ userId: row.id, action: "auth.password_reset_requested", entityType: "user", entityId: row.id });
+
+      return {
+        email,
+        resetEmailSent: sent,
+        resetUrl: process.env.NODE_ENV === "production" ? undefined : resetUrl
+      };
+    }
+
+    const row = this.memoryUsers.get(email);
+    if (!row) {
+      return { email, resetEmailSent: false };
+    }
+
+    const resetToken = randomBytes(32).toString("hex");
+    this.memoryPasswordResetTokens.set(tokenHash(resetToken), {
+      userId: row.id,
+      expiresAt: Date.now() + PASSWORD_RESET_TTL_HOURS * 60 * 60 * 1000,
+      used: false
+    });
+    return {
+      email,
+      resetEmailSent: false,
+      resetUrl: this.buildPasswordResetUrl(resetToken)
+    };
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    if (newPassword.length < 8) {
+      throw new AuthError(400, "Password must be at least 8 characters");
+    }
+
+    const hashed = tokenHash(token);
+
+    if (this.pool) {
+      const result = await this.pool.query<{
+        token_id: string;
+        user_id: string;
+        expires_at: string;
+        used_at: string | null;
+      }>(
+        `SELECT id AS token_id, user_id, expires_at, used_at
+         FROM password_reset_tokens
+         WHERE token_hash = $1
+         LIMIT 1`,
+        [hashed]
+      );
+      const row = result.rows[0];
+      if (!row) throw new AuthError(400, "Invalid reset token");
+      if (row.used_at) throw new AuthError(400, "Reset token already used");
+      if (new Date(row.expires_at).getTime() < Date.now()) throw new AuthError(400, "Reset token expired");
+
+      await this.pool.query("BEGIN");
+      try {
+        await this.pool.query(`UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1`, [row.token_id]);
+        await this.pool.query(`UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`, [row.user_id, passwordHash(newPassword)]);
+        await this.pool.query(`UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1`, [row.user_id]);
+        await this.pool.query("COMMIT");
+      } catch (error) {
+        await this.pool.query("ROLLBACK");
+        throw error;
+      }
+
+      await this.writeAudit({ userId: row.user_id, action: "auth.password_reset_completed", entityType: "user", entityId: row.user_id });
+      return;
+    }
+
+    const memoryToken = this.memoryPasswordResetTokens.get(hashed);
+    if (!memoryToken) throw new AuthError(400, "Invalid reset token");
+    if (memoryToken.used) throw new AuthError(400, "Reset token already used");
+    if (memoryToken.expiresAt < Date.now()) throw new AuthError(400, "Reset token expired");
+
+    const user = [...this.memoryUsers.values()].find((entry) => entry.id === memoryToken.userId);
+    if (!user) throw new AuthError(404, "User not found");
+    user.password_hash = passwordHash(newPassword);
+    memoryToken.used = true;
+  }
+
   async addWorkspaceMembership(userId: string, workspaceId: string, role: "owner" = "owner"): Promise<void> {
     if (this.pool) {
       await this.pool.query(
@@ -507,6 +687,11 @@ export class AuthService {
   private buildVerificationUrl(token: string): string {
     const base = this.cleanEnv(process.env.APP_BASE_URL) || "http://localhost:5173";
     return `${base.replace(/\/$/, "")}/verify-email?token=${encodeURIComponent(token)}`;
+  }
+
+  private buildPasswordResetUrl(token: string): string {
+    const base = this.cleanEnv(process.env.APP_BASE_URL) || "http://localhost:5173";
+    return `${base.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
   }
 
   private composeFromAddress(): string | null {
@@ -599,6 +784,52 @@ export class AuthService {
     ].join("\n");
   }
 
+  private buildPasswordResetEmailHtml(name: string, resetUrl: string): string {
+    const safeName = this.escapeHtml(name);
+    const safeLink = this.escapeHtml(resetUrl);
+    const brandName = this.escapeHtml(this.cleanEnv(process.env.EMAIL_BRAND_NAME) || "VCReach");
+    return `
+<!doctype html>
+<html>
+  <body style="margin:0;background:#f1f5f9;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0f172a;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;margin:0 auto;">
+      <tr>
+        <td style="padding:0;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:28px 24px 20px 24px;">
+                <div style="font-size:22px;font-weight:700;color:#0f172a;">Reset your ${brandName} password</div>
+                <p style="margin:10px 0 0 0;font-size:14px;line-height:1.6;color:#475569;">Hi ${safeName}, we received a password reset request for your account.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 24px 20px 24px;">
+                <div style="text-align:center;padding:6px 0 18px 0;">
+                  <a href="${safeLink}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-weight:600;border-radius:10px;padding:12px 22px;font-size:14px;">Reset Password</a>
+                </div>
+                <p style="margin:0 0 10px 0;font-size:12px;line-height:1.6;color:#64748b;">This link expires in ${PASSWORD_RESET_TTL_HOURS} hours.</p>
+                <p style="margin:0;padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;word-break:break-all;font-size:12px;line-height:1.6;color:#334155;">${safeLink}</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+    `.trim();
+  }
+
+  private buildPasswordResetEmailText(name: string, resetUrl: string): string {
+    const brandName = this.cleanEnv(process.env.EMAIL_BRAND_NAME) || "VCReach";
+    return [
+      `Hi ${name},`,
+      "",
+      `Use this link to reset your ${brandName} password (expires in ${PASSWORD_RESET_TTL_HOURS} hours):`,
+      resetUrl
+    ].join("\n");
+  }
+
   private async sendVerificationEmail(email: string, name: string, verificationUrl: string): Promise<boolean> {
     const resendKey = this.cleanEnv(process.env.RESEND_API_KEY);
     const from = this.composeFromAddress();
@@ -633,6 +864,44 @@ export class AuthService {
       return true;
     } catch (error) {
       console.error("Verification email send error:", error);
+      return false;
+    }
+  }
+
+  private async sendPasswordResetEmail(email: string, name: string, resetUrl: string): Promise<boolean> {
+    const resendKey = this.cleanEnv(process.env.RESEND_API_KEY);
+    const from = this.composeFromAddress();
+
+    if (!resendKey || !from) {
+      console.log(`Password reset link for ${email}: ${resetUrl}`);
+      return false;
+    }
+
+    try {
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          from,
+          to: [email],
+          subject: "Reset your VCReach password",
+          html: this.buildPasswordResetEmailHtml(name, resetUrl),
+          text: this.buildPasswordResetEmailText(name, resetUrl)
+        })
+      });
+
+      if (!response.ok) {
+        const payload = await response.text();
+        console.error("Resend password reset email failed:", payload);
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Password reset email send error:", error);
       return false;
     }
   }

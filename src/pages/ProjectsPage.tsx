@@ -15,6 +15,7 @@ export function ProjectsPage(): JSX.Element {
   const [company, setCompany] = useState("");
   const [website, setWebsite] = useState("");
   const [error, setError] = useState<string>();
+  const [fieldErrors, setFieldErrors] = useState<{ name?: string; website?: string }>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -30,10 +31,20 @@ export function ProjectsPage(): JSX.Element {
   useEffect(() => { void refresh(); }, [refresh]);
 
   const onCreate = async (): Promise<void> => {
-    if (name.trim().length < 2) return;
+    const nextErrors: { name?: string; website?: string } = {};
+    if (name.trim().length < 2) {
+      nextErrors.name = "Project name must be at least 2 characters.";
+    }
+    if (website.trim() && !/^https?:\/\/.+/i.test(website.trim())) {
+      nextErrors.website = "Website must start with http:// or https://";
+    }
+    setFieldErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) return;
+
     try {
       const ws = await createWorkspace({ name: name.trim(), company: company.trim() || undefined, website: website.trim() || undefined });
       setName(""); setCompany(""); setWebsite("");
+      setFieldErrors({});
       navigate(`/projects/${ws.id}/onboarding`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create project");
@@ -74,9 +85,25 @@ export function ProjectsPage(): JSX.Element {
         <CardHeader><h3 className="text-base font-semibold">Create Project</h3></CardHeader>
         <CardBody>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Input placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} />
+            <Input
+              placeholder="Project name"
+              value={name}
+              error={fieldErrors.name}
+              onChange={(e) => {
+                setName(e.target.value);
+                if (fieldErrors.name) setFieldErrors((prev) => ({ ...prev, name: undefined }));
+              }}
+            />
             <Input placeholder="Company name" value={company} onChange={(e) => setCompany(e.target.value)} />
-            <Input placeholder="Website" value={website} onChange={(e) => setWebsite(e.target.value)} />
+            <Input
+              placeholder="Website"
+              value={website}
+              error={fieldErrors.website}
+              onChange={(e) => {
+                setWebsite(e.target.value);
+                if (fieldErrors.website) setFieldErrors((prev) => ({ ...prev, website: undefined }));
+              }}
+            />
           </div>
           <Button className="mt-3" onClick={() => void onCreate()}>Create & Setup</Button>
         </CardBody>

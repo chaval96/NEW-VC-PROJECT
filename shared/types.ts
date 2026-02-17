@@ -314,6 +314,19 @@ export interface RunDetail {
   logs: RunLog[];
 }
 
+export interface SubmissionDetail {
+  request: SubmissionRequest;
+  firm?: Firm;
+  events: SubmissionEvent[];
+}
+
+export interface WorkspaceReadiness {
+  workspaceId: string;
+  ready: boolean;
+  missingFields: string[];
+  investorCount: number;
+}
+
 export interface OpsAlert {
   id: string;
   severity: "warning" | "critical";

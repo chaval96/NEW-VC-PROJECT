@@ -14,23 +14,23 @@ export function ActivityTable({ events }: ActivityTableProps): JSX.Element {
         <h3 className="text-sm font-semibold">Form Submission Activity</h3>
       </CardHeader>
       <CardBody className="p-0">
-        <div className="overflow-auto">
+        <div className="max-h-[420px] overflow-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-100 text-left dark:border-slate-700">
-                <th className="px-5 py-2 text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Company</th>
-                <th className="px-5 py-2 text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Status</th>
-                <th className="px-5 py-2 text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Attempted</th>
-                <th className="px-5 py-2 text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Last Milestone</th>
-                <th className="px-5 py-2 text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Blocked Reason</th>
-                <th className="px-5 py-2 text-xs font-medium uppercase text-slate-500 dark:text-slate-400">Notes</th>
+              <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left dark:border-slate-700 dark:bg-slate-800">
+                <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Company</th>
+                <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Status</th>
+                <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Attempted</th>
+                <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Last Milestone</th>
+                <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Blocked Reason</th>
+                <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Notes</th>
               </tr>
             </thead>
             <tbody>
               {events.map((event) => {
                 const lastMilestone = event.submittedAt ?? event.filledAt ?? event.discoveredAt ?? event.attemptedAt;
                 return (
-                  <tr key={event.id} className="border-b border-slate-50 dark:border-slate-700/50">
+                  <tr key={event.id} className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-700/50 dark:hover:bg-slate-700/30">
                     <td className="px-5 py-2 font-medium text-slate-900 dark:text-slate-100">{event.firmName}</td>
                     <td className="px-5 py-2">
                       <StatusPill status={event.status} />

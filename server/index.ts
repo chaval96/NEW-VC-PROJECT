@@ -1,4 +1,5 @@
 import cors from "cors";
+import dayjs from "dayjs";
 import express from "express";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
@@ -140,6 +141,24 @@ const authEmailSchema = z.string().email().refine(isAllowedAuthEmail, {
   message: "Please enter a valid email address."
 });
 
+function csvEscape(value: unknown): string {
+  const raw = value == null ? "" : String(value);
+  if (/["\n,]/.test(raw)) {
+    return `"${raw.replaceAll("\"", "\"\"")}"`;
+  }
+  return raw;
+}
+
+function toCsv(columns: string[], rows: Array<Record<string, unknown>>): string {
+  const header = columns.join(",");
+  const lines = rows.map((row) => columns.map((column) => csvEscape(row[column])).join(","));
+  return [header, ...lines].join("\n");
+}
+
+function safeFilePart(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "export";
+}
+
 const submissionMaxAttemptsDefault = Math.max(1, Number(process.env.SUBMISSION_MAX_ATTEMPTS ?? 2));
 const submissionRetryDelayMs = Math.max(300, Number(process.env.SUBMISSION_RETRY_DELAY_MS ?? 1500));
 const submissionStaleExecutionMs = Math.max(60_000, Number(process.env.SUBMISSION_EXECUTION_STALE_MINUTES ?? 10) * 60_000);
@@ -157,6 +176,10 @@ function sleep(ms: number): Promise<void> {
 
 function isSubmissionSuccess(status: SubmissionStatus): boolean {
   return status === "submitted" || status === "form_filled";
+}
+
+function canApproveFromStatus(status: string): boolean {
+  return ["pending_approval", "pending_retry", "failed"].includes(status);
 }
 
 function updateFirmFromExecution(
@@ -443,6 +466,49 @@ app.post(
   })
 );
 
+const forgotPasswordSchema = z.object({ email: authEmailSchema });
+app.post(
+  "/api/auth/forgot-password",
+  asyncHandler(async (req, res) => {
+    const parsed = forgotPasswordSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const result = await authService.requestPasswordReset(parsed.data.email);
+    const message = result.resetEmailSent
+      ? "If this email exists, a password reset link has been sent."
+      : "If this email exists, we could not deliver the reset email right now. Please try again later.";
+
+    res.json({
+      ok: true,
+      message,
+      resetEmailSent: result.resetEmailSent,
+      resetUrl: result.resetUrl
+    });
+  })
+);
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(12),
+  password: z.string().min(8)
+});
+
+app.post(
+  "/api/auth/reset-password",
+  asyncHandler(async (req, res) => {
+    const parsed = resetPasswordSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    await authService.resetPassword(parsed.data.token, parsed.data.password);
+    res.json({ ok: true, message: "Password reset successful. You can now sign in." });
+  })
+);
+
 const loginSchema = z.object({
   email: authEmailSchema,
   password: z.string().min(8)
@@ -475,6 +541,8 @@ app.use(
       req.path === "/auth/signup" ||
       req.path === "/auth/verify-email" ||
       req.path === "/auth/resend-verification" ||
+      req.path === "/auth/forgot-password" ||
+      req.path === "/auth/reset-password" ||
       req.path === "/auth/login"
     ) {
       next();
@@ -502,6 +570,45 @@ app.use(
 app.get("/api/auth/me", (_req, res) => {
   res.json({ user: getAuthUser(res) });
 });
+
+const authProfilePatchSchema = z.object({
+  name: z.string().min(2)
+});
+
+app.patch(
+  "/api/auth/profile",
+  asyncHandler(async (req, res) => {
+    const parsed = authProfilePatchSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const user = getAuthUser(res);
+    const updated = await authService.updateProfile(user.id, parsed.data);
+    res.json({ user: updated });
+  })
+);
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(8),
+  newPassword: z.string().min(8)
+});
+
+app.post(
+  "/api/auth/change-password",
+  asyncHandler(async (req, res) => {
+    const parsed = changePasswordSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const user = getAuthUser(res);
+    await authService.changePassword(user.id, parsed.data.currentPassword, parsed.data.newPassword);
+    res.json({ ok: true, message: "Password updated successfully." });
+  })
+);
 
 app.post(
   "/api/auth/logout",
@@ -642,6 +749,35 @@ app.patch(
 );
 
 app.get(
+  "/api/workspaces/:id/readiness",
+  asyncHandler(async (req, res) => {
+    const user = getAuthUser(res);
+    const hasAccess = await authService.userHasWorkspaceAccess(user.id, req.params.id);
+    if (!hasAccess) {
+      res.status(403).json({ message: "Forbidden workspace access" });
+      return;
+    }
+
+    const workspace = store.getWorkspace(req.params.id);
+    if (!workspace) {
+      res.status(404).json({ message: "Workspace not found" });
+      return;
+    }
+
+    const missing = validateProfileReadiness(workspace.profile);
+    const investorCount = store.listFirms(req.params.id).length;
+    const ready = missing.length === 0 && investorCount > 0;
+
+    res.json({
+      workspaceId: workspace.id,
+      ready,
+      missingFields: missing,
+      investorCount
+    });
+  })
+);
+
+app.get(
   "/api/profile",
   asyncHandler(async (req, res) => {
     const { workspace } = await resolveWorkspaceContext(req, res);
@@ -684,6 +820,48 @@ app.get(
     const all = store.listFirms(workspaceId);
     const start = (page - 1) * limit;
     res.json({ firms: all.slice(start, start + limit), total: all.length });
+  })
+);
+
+app.get(
+  "/api/export/firms.csv",
+  asyncHandler(async (req, res) => {
+    const { workspaceId, workspace } = await resolveWorkspaceContext(req, res);
+    const firms = store.listFirms(workspaceId);
+
+    const csv = toCsv(
+      [
+        "id",
+        "name",
+        "website",
+        "geography",
+        "investor_type",
+        "check_size_range",
+        "focus_sectors",
+        "stage_focus",
+        "stage",
+        "status_reason",
+        "last_touched_at"
+      ],
+      firms.map((firm) => ({
+        id: firm.id,
+        name: firm.name,
+        website: firm.website,
+        geography: firm.geography,
+        investor_type: firm.investorType,
+        check_size_range: firm.checkSizeRange,
+        focus_sectors: firm.focusSectors.join("|"),
+        stage_focus: firm.stageFocus.join("|"),
+        stage: firm.stage,
+        status_reason: firm.statusReason,
+        last_touched_at: firm.lastTouchedAt ?? ""
+      }))
+    );
+
+    const fileName = `${safeFilePart(workspace.name)}-firms-${dayjs().format("YYYYMMDD-HHmm")}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.send(csv);
   })
 );
 
@@ -836,6 +1014,192 @@ app.get(
   })
 );
 
+app.get(
+  "/api/submissions/:id",
+  asyncHandler(async (req, res) => {
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const request = store.getSubmissionRequest(req.params.id, workspaceId);
+    if (!request) {
+      res.status(404).json({ message: "Submission request not found" });
+      return;
+    }
+
+    const firm = store.getFirm(request.firmId, workspaceId);
+    const events = store
+      .listEvents(workspaceId)
+      .filter((event) => event.firmId === request.firmId)
+      .sort((a, b) => (a.attemptedAt > b.attemptedAt ? -1 : 1))
+      .slice(0, 40);
+
+    res.json({
+      request,
+      firm,
+      events
+    });
+  })
+);
+
+app.get(
+  "/api/export/submissions.csv",
+  asyncHandler(async (req, res) => {
+    const { workspaceId, workspace } = await resolveWorkspaceContext(req, res);
+    const queue = store.listSubmissionRequests(workspaceId);
+
+    const csv = toCsv(
+      [
+        "id",
+        "firm_name",
+        "website",
+        "status",
+        "mode",
+        "prepared_at",
+        "approved_by",
+        "approved_at",
+        "executed_at",
+        "execution_attempts",
+        "max_execution_attempts",
+        "last_execution_status",
+        "next_retry_at",
+        "result_note"
+      ],
+      queue.map((request) => ({
+        id: request.id,
+        firm_name: request.firmName,
+        website: request.website,
+        status: request.status,
+        mode: request.mode,
+        prepared_at: request.preparedAt,
+        approved_by: request.approvedBy ?? "",
+        approved_at: request.approvedAt ?? "",
+        executed_at: request.executedAt ?? "",
+        execution_attempts: request.executionAttempts ?? 0,
+        max_execution_attempts: request.maxExecutionAttempts ?? 0,
+        last_execution_status: request.lastExecutionStatus ?? "",
+        next_retry_at: request.nextRetryAt ?? "",
+        result_note: request.resultNote ?? ""
+      }))
+    );
+
+    const fileName = `${safeFilePart(workspace.name)}-submissions-${dayjs().format("YYYYMMDD-HHmm")}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.send(csv);
+  })
+);
+
+const bulkApproveSchema = z.object({
+  ids: z.array(z.string()).min(1).max(200),
+  approvedBy: z.string().default("Operator")
+});
+
+app.post(
+  "/api/submissions/actions/bulk-approve",
+  asyncHandler(async (req, res) => {
+    const parsed = bulkApproveSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const uniqueIds = [...new Set(parsed.data.ids)];
+    const failed: Array<{ id: string; message: string }> = [];
+    const succeeded: string[] = [];
+
+    for (const requestId of uniqueIds) {
+      const existing = store.getSubmissionRequest(requestId, workspaceId);
+      if (!existing) {
+        failed.push({ id: requestId, message: "Submission request not found" });
+        continue;
+      }
+      if (!canApproveFromStatus(existing.status)) {
+        failed.push({ id: requestId, message: `Cannot approve from status '${existing.status}'` });
+        continue;
+      }
+
+      const approved = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
+        ...current,
+        status: "approved",
+        approvedBy: parsed.data.approvedBy,
+        approvedAt: new Date().toISOString()
+      }));
+
+      if (!approved) {
+        failed.push({ id: requestId, message: "Submission request not found" });
+        continue;
+      }
+
+      try {
+        await runSubmissionExecution(workspaceId, requestId);
+        succeeded.push(requestId);
+      } catch (error) {
+        failed.push({
+          id: requestId,
+          message: error instanceof Error ? error.message : "Execution failed"
+        });
+      }
+    }
+
+    await store.persist();
+    res.json({
+      processed: uniqueIds.length,
+      approved: succeeded.length,
+      failed
+    });
+  })
+);
+
+const bulkRejectSchema = z.object({
+  ids: z.array(z.string()).min(1).max(200),
+  rejectedBy: z.string().default("Operator"),
+  reason: z.string().default("Rejected by operator")
+});
+
+app.post(
+  "/api/submissions/actions/bulk-reject",
+  asyncHandler(async (req, res) => {
+    const parsed = bulkRejectSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const uniqueIds = [...new Set(parsed.data.ids)];
+    const failed: Array<{ id: string; message: string }> = [];
+    let rejected = 0;
+
+    for (const requestId of uniqueIds) {
+      const existing = store.getSubmissionRequest(requestId, workspaceId);
+      if (!existing) {
+        failed.push({ id: requestId, message: "Submission request not found" });
+        continue;
+      }
+
+      const updated = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
+        ...current,
+        status: "rejected",
+        approvedBy: parsed.data.rejectedBy,
+        approvedAt: new Date().toISOString(),
+        resultNote: parsed.data.reason
+      }));
+
+      if (!updated) {
+        failed.push({ id: requestId, message: "Submission request not found" });
+        continue;
+      }
+      rejected += 1;
+    }
+
+    await store.persist();
+    res.json({
+      processed: uniqueIds.length,
+      rejected,
+      failed
+    });
+  })
+);
+
 const approveSubmissionSchema = z.object({ approvedBy: z.string().default("Operator") });
 
 app.post(
@@ -853,7 +1217,7 @@ app.post(
       res.status(404).json({ message: "Submission request not found" });
       return;
     }
-    if (!["pending_approval", "pending_retry", "failed"].includes(existing.status)) {
+    if (!canApproveFromStatus(existing.status)) {
       res.status(409).json({ message: `Submission cannot be approved from status '${existing.status}'` });
       return;
     }

@@ -30,7 +30,8 @@ export function Button({
 }: ButtonProps): JSX.Element {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-lg border font-semibold transition-colors
+      className={`inline-flex items-center justify-center gap-2 rounded-lg border font-semibold transition-all
+        hover:shadow-sm active:translate-y-[1px]
         disabled:opacity-40 disabled:cursor-not-allowed ${variantStyles[variant]} ${sizeStyles[size]} ${className}`}
       {...props}
     >

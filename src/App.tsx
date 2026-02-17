@@ -6,9 +6,15 @@ import type { AuthUser } from "./types";
 
 const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ default: module.LoginPage })));
 const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage").then((module) => ({ default: module.VerifyEmailPage })));
+const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage").then((module) => ({ default: module.ForgotPasswordPage })));
+const ResetPasswordPage = lazy(() => import("./pages/ResetPasswordPage").then((module) => ({ default: module.ResetPasswordPage })));
 const ProjectsPage = lazy(() => import("./pages/ProjectsPage").then((module) => ({ default: module.ProjectsPage })));
 const OnboardingPage = lazy(() => import("./pages/OnboardingPage").then((module) => ({ default: module.OnboardingPage })));
 const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
+const OperationsPage = lazy(() => import("./pages/OperationsPage").then((module) => ({ default: module.OperationsPage })));
+const RunDetailPage = lazy(() => import("./pages/RunDetailPage").then((module) => ({ default: module.RunDetailPage })));
+const SubmissionDetailPage = lazy(() => import("./pages/SubmissionDetailPage").then((module) => ({ default: module.SubmissionDetailPage })));
+const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 
 function ProtectedRoute({ user, children }: { user: AuthUser | null; children: JSX.Element }): JSX.Element {
   if (!user) {
@@ -58,6 +64,10 @@ function App(): JSX.Element {
     setAuthUser(null);
   };
 
+  const handleAuthUserUpdated = (user: AuthUser): void => {
+    setAuthUser(user);
+  };
+
   if (authLoading) {
     return <div className="min-h-screen bg-slate-50 dark:bg-slate-900" />;
   }
@@ -70,6 +80,8 @@ function App(): JSX.Element {
           <Routes>
             <Route path="/login" element={authUser ? <Navigate to="/projects" replace /> : <LoginPage onLogin={handleLogin} />} />
             <Route path="/verify-email" element={<VerifyEmailPage />} />
+            <Route path="/forgot-password" element={authUser ? <Navigate to="/projects" replace /> : <ForgotPasswordPage />} />
+            <Route path="/reset-password" element={authUser ? <Navigate to="/projects" replace /> : <ResetPasswordPage />} />
 
             <Route
               path="/projects"
@@ -92,6 +104,38 @@ function App(): JSX.Element {
               element={
                 <ProtectedRoute user={authUser}>
                   <DashboardPage user={authUser as AuthUser} />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:workspaceId/operations"
+              element={
+                <ProtectedRoute user={authUser}>
+                  <OperationsPage user={authUser as AuthUser} />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:workspaceId/runs/:runId"
+              element={
+                <ProtectedRoute user={authUser}>
+                  <RunDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:workspaceId/submissions/:submissionId"
+              element={
+                <ProtectedRoute user={authUser}>
+                  <SubmissionDetailPage user={authUser as AuthUser} />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:workspaceId/settings"
+              element={
+                <ProtectedRoute user={authUser}>
+                  <SettingsPage user={authUser as AuthUser} onAuthUserUpdated={handleAuthUserUpdated} />
                 </ProtectedRoute>
               }
             />

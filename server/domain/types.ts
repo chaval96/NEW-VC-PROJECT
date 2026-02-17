@@ -21,12 +21,14 @@ export type {
   RunDetail,
   RunLog,
   RunStatus,
+  SubmissionDetail,
   SubmissionChannel,
   SubmissionEvent,
   SubmissionRequest,
   SubmissionRequestStatus,
   SubmissionStatus,
   Workspace,
+  WorkspaceReadiness,
   WorkspacesResponse,
 } from "../../shared/types.js";
 

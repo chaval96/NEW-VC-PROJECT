@@ -6,9 +6,12 @@ export type {
   OverviewResponse,
   PipelineStage,
   Profile,
+  RunDetail,
+  SubmissionDetail,
   SubmissionEvent,
   SubmissionRequest,
   SubmissionRequestStatus,
+  WorkspaceReadiness,
   Workspace,
   WorkspacesResponse
 } from "@shared/types";
@@ -37,4 +40,11 @@ export interface AuthResendVerificationResponse {
   message: string;
   verificationEmailSent: boolean;
   verificationUrl?: string;
+}
+
+export interface AuthForgotPasswordResponse {
+  ok: true;
+  message: string;
+  resetEmailSent: boolean;
+  resetUrl?: string;
 }
