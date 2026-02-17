@@ -8,7 +8,6 @@ import { buildTemplateProfile } from "./domain/seed.js";
 import type { AssessmentResult, CompanyProfile, PipelineStage, SubmissionStatus, Workspace } from "./domain/types.js";
 import { CampaignOrchestrator } from "./orchestrator/workflow.js";
 import { buildOverview } from "./services/analytics.js";
-import { assessInvestors } from "./services/ai-assessor.js";
 import { AuthService, type AuthUser } from "./services/auth-service.js";
 import { CreditService } from "./services/credit-service.js";
 import { parseFirmsFromGoogleDriveLink, parseFirmsFromUpload } from "./services/import-parser.js";
@@ -21,6 +20,8 @@ const store = new StateStore();
 const orchestrator = new CampaignOrchestrator(store);
 const creditService = new CreditService(store);
 const authService = new AuthService();
+const featureCreditsEnabled = process.env.FEATURE_CREDITS === "true";
+const featureAssessmentEnabled = process.env.FEATURE_ASSESSMENT === "true";
 
 type AsyncHandler = (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<void>;
 function asyncHandler(fn: AsyncHandler): express.RequestHandler {
@@ -701,114 +702,119 @@ app.post(
   })
 );
 
-app.get(
-  "/api/credits/balance",
-  asyncHandler(async (req, res) => {
-    const { workspaceId } = await resolveWorkspaceContext(req, res);
-    res.json(creditService.getBalance(workspaceId));
-  })
-);
+if (featureCreditsEnabled) {
+  app.get(
+    "/api/credits/balance",
+    asyncHandler(async (req, res) => {
+      const { workspaceId } = await resolveWorkspaceContext(req, res);
+      res.json(creditService.getBalance(workspaceId));
+    })
+  );
 
-app.get(
-  "/api/credits/transactions",
-  asyncHandler(async (req, res) => {
-    const { workspaceId } = await resolveWorkspaceContext(req, res);
-    res.json(creditService.listTransactions(workspaceId));
-  })
-);
+  app.get(
+    "/api/credits/transactions",
+    asyncHandler(async (req, res) => {
+      const { workspaceId } = await resolveWorkspaceContext(req, res);
+      res.json(creditService.listTransactions(workspaceId));
+    })
+  );
 
-app.post(
-  "/api/credits/purchase",
-  asyncHandler(async (req, res) => {
-    const { workspaceId } = await resolveWorkspaceContext(req, res);
-    const packs = Math.max(1, Number(req.body?.packs) || 1);
-    const transaction = await creditService.recordPurchase(workspaceId, packs);
-    res.status(201).json({ transaction, balance: creditService.getBalance(workspaceId) });
-  })
-);
+  app.post(
+    "/api/credits/purchase",
+    asyncHandler(async (req, res) => {
+      const { workspaceId } = await resolveWorkspaceContext(req, res);
+      const packs = Math.max(1, Number(req.body?.packs) || 1);
+      const transaction = await creditService.recordPurchase(workspaceId, packs);
+      res.status(201).json({ transaction, balance: creditService.getBalance(workspaceId) });
+    })
+  );
+}
 
-app.post(
-  "/api/assess",
-  asyncHandler(async (req, res) => {
-    const { workspaceId, workspace } = await resolveWorkspaceContext(req, res);
-    const firms = store.listFirms(workspaceId);
+if (featureAssessmentEnabled) {
+  app.post(
+    "/api/assess",
+    asyncHandler(async (req, res) => {
+      const { workspaceId, workspace } = await resolveWorkspaceContext(req, res);
+      const firms = store.listFirms(workspaceId);
 
-    const assessment: AssessmentResult = {
-      id: uuid(),
-      workspaceId,
-      status: "running",
-      startedAt: new Date().toISOString(),
-      matches: [],
-      totalFirmsAnalyzed: firms.length
-    };
+      const assessment: AssessmentResult = {
+        id: uuid(),
+        workspaceId,
+        status: "running",
+        startedAt: new Date().toISOString(),
+        matches: [],
+        totalFirmsAnalyzed: firms.length
+      };
 
-    store.addAssessment(assessment);
-    await store.persist();
+      store.addAssessment(assessment);
+      await store.persist();
 
-    assessInvestors(workspace.profile, firms)
-      .then(async (matches) => {
-        for (const match of matches) {
-          const firm = store.getFirm(match.firmId, workspaceId);
-          if (firm) {
-            store.upsertFirm({ ...firm, matchScore: match.score, matchReasoning: match.reasoning });
+      const { assessInvestors } = await import("./services/ai-assessor.js");
+      assessInvestors(workspace.profile, firms)
+        .then(async (matches) => {
+          for (const match of matches) {
+            const firm = store.getFirm(match.firmId, workspaceId);
+            if (firm) {
+              store.upsertFirm({ ...firm, matchScore: match.score, matchReasoning: match.reasoning });
+            }
           }
-        }
 
-        store.updateAssessment(assessment.id, (current) => ({
-          ...current,
-          status: "completed",
-          completedAt: new Date().toISOString(),
-          matches
-        }));
+          store.updateAssessment(assessment.id, (current) => ({
+            ...current,
+            status: "completed",
+            completedAt: new Date().toISOString(),
+            matches
+          }));
 
-        await store.persist();
-      })
-      .catch(async (error) => {
-        store.updateAssessment(assessment.id, (current) => ({
-          ...current,
-          status: "failed",
-          completedAt: new Date().toISOString(),
-          error: error instanceof Error ? error.message : "Assessment failed"
-        }));
+          await store.persist();
+        })
+        .catch(async (error) => {
+          store.updateAssessment(assessment.id, (current) => ({
+            ...current,
+            status: "failed",
+            completedAt: new Date().toISOString(),
+            error: error instanceof Error ? error.message : "Assessment failed"
+          }));
 
-        await store.persist();
-      });
+          await store.persist();
+        });
 
-    res.status(202).json(assessment);
-  })
-);
+      res.status(202).json(assessment);
+    })
+  );
 
-app.get(
-  "/api/assess/latest",
-  asyncHandler(async (req, res) => {
-    const { workspaceId } = await resolveWorkspaceContext(req, res);
-    const latest = store.getLatestAssessment(workspaceId);
-    if (!latest) {
-      res.status(404).json({ message: "No assessment found" });
-      return;
-    }
+  app.get(
+    "/api/assess/latest",
+    asyncHandler(async (req, res) => {
+      const { workspaceId } = await resolveWorkspaceContext(req, res);
+      const latest = store.getLatestAssessment(workspaceId);
+      if (!latest) {
+        res.status(404).json({ message: "No assessment found" });
+        return;
+      }
 
-    res.json(latest);
-  })
-);
+      res.json(latest);
+    })
+  );
 
-app.get(
-  "/api/assess/:id",
-  asyncHandler(async (req, res) => {
-    const { workspaceId } = await resolveWorkspaceContext(req, res);
-    const assessment = store.getAssessment(req.params.id);
-    if (!assessment) {
-      res.status(404).json({ message: "Assessment not found" });
-      return;
-    }
-    if (assessment.workspaceId !== workspaceId) {
-      res.status(404).json({ message: "Assessment not found" });
-      return;
-    }
+  app.get(
+    "/api/assess/:id",
+    asyncHandler(async (req, res) => {
+      const { workspaceId } = await resolveWorkspaceContext(req, res);
+      const assessment = store.getAssessment(req.params.id);
+      if (!assessment) {
+        res.status(404).json({ message: "Assessment not found" });
+        return;
+      }
+      if (assessment.workspaceId !== workspaceId) {
+        res.status(404).json({ message: "Assessment not found" });
+        return;
+      }
 
-    res.json(assessment);
-  })
-);
+      res.json(assessment);
+    })
+  );
+}
 
 if (process.env.NODE_ENV === "production") {
   const distPath = path.resolve(process.cwd(), "dist");

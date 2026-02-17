@@ -75,6 +75,11 @@ Optional (browser automation):
 - `PLAYWRIGHT_ENABLED=true`
 - `PLAYWRIGHT_SUBMIT_ENABLED=true`
 
+Optional feature flags (disabled by default for lower cost):
+
+- `FEATURE_CREDITS=true`
+- `FEATURE_ASSESSMENT=true`
+
 ## Local development
 
 ```bash
@@ -109,6 +114,11 @@ Workspace + operations:
 - `POST /api/submissions/:id/approve?workspaceId=...`
 - `POST /api/submissions/:id/reject?workspaceId=...`
 - `POST /api/runs` (body includes `workspaceId`)
+
+Optional endpoints (only when feature flags are enabled):
+
+- `/api/credits/*`
+- `/api/assess*`
 
 ## Deploy checklist (Railway)
 
