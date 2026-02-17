@@ -7,6 +7,14 @@ primary_region = "iad"
 [env]
   NODE_ENV = "production"
   PORT = "8787"
+  DATABASE_SSL = "require"
+  CORS_ORIGIN = "https://wask-vc-formops.fly.dev"
+  SUBMISSION_WATCHDOG_INTERVAL_SECONDS = "45"
+  OPS_STALE_RUN_MINUTES = "20"
+  OPS_ALERT_WINDOW_HOURS = "24"
+
+# Secrets (set via `fly secrets set`):
+# DATABASE_URL, RESEND_API_KEY, AUTH_EMAIL, AUTH_PASSWORD
 
 [http_service]
   internal_port = 8787
@@ -14,6 +22,22 @@ primary_region = "iad"
   auto_stop_machines = true
   auto_start_machines = true
   min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 100
+    soft_limit = 80
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/api/health"
+  timeout = "5s"
+
+[metrics]
+  port = 8787
+  path = "/api/health"
 
 [[vm]]
   memory = "1024mb"

@@ -14,9 +14,41 @@
   --color-danger-600: #dc2626;
 }
 
+/* ── Light mode defaults ─────────────────────────────── */
+:root {
+  --surface-primary: #ffffff;
+  --surface-secondary: #f8fafc;
+  --surface-tertiary: #f1f5f9;
+  --surface-hover: #f1f5f9;
+  --border-primary: #e2e8f0;
+  --border-secondary: #f1f5f9;
+  --text-heading: #0f172a;
+  --text-body: #334155;
+  --text-muted: #64748b;
+  --text-faint: #94a3b8;
+}
+
+/* ── Dark mode overrides ─────────────────────────────── */
+.dark {
+  --surface-primary: #0f172a;
+  --surface-secondary: #1e293b;
+  --surface-tertiary: #334155;
+  --surface-hover: #334155;
+  --border-primary: #334155;
+  --border-secondary: #1e293b;
+  --text-heading: #f1f5f9;
+  --text-body: #cbd5e1;
+  --text-muted: #94a3b8;
+  --text-faint: #64748b;
+}
+
 body {
-  @apply bg-slate-50 text-slate-900 antialiased;
+  background-color: var(--surface-secondary);
+  color: var(--text-body);
   font-family: "Inter", "IBM Plex Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 /* Status pills */
@@ -26,6 +58,12 @@ body {
 .pill-red { @apply bg-red-50 text-red-700 ring-1 ring-red-200; }
 .pill-slate { @apply bg-slate-100 text-slate-600 ring-1 ring-slate-200; }
 
+.dark .pill-blue { @apply bg-blue-950 text-blue-300 ring-blue-800; }
+.dark .pill-green { @apply bg-emerald-950 text-emerald-300 ring-emerald-800; }
+.dark .pill-amber { @apply bg-amber-950 text-amber-300 ring-amber-800; }
+.dark .pill-red { @apply bg-red-950 text-red-300 ring-red-800; }
+.dark .pill-slate { @apply bg-slate-800 text-slate-300 ring-slate-700; }
+
 /* Animations */
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes pulse-subtle { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
@@ -34,8 +72,8 @@ body {
 
 /* Skeleton loading */
 .skeleton {
-  @apply rounded bg-slate-200;
-  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+  border-radius: 0.5rem;
+  background: linear-gradient(90deg, var(--surface-tertiary) 25%, var(--surface-secondary) 50%, var(--surface-tertiary) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
 }
@@ -44,4 +82,4 @@ body {
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: var(--text-faint); border-radius: 3px; }

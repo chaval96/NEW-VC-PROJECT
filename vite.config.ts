@@ -8,6 +8,19 @@ export default defineConfig({
   resolve: {
     alias: { "@shared": path.resolve(__dirname, "shared") },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom", "react-router-dom"],
+          "vendor-charts": ["recharts"],
+          "vendor-utils": ["dayjs", "zod"],
+        },
+      },
+    },
+    sourcemap: false,
+    target: "es2022",
+  },
   server: {
     port: 5173,
     proxy: {
