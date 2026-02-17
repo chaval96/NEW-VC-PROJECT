@@ -876,7 +876,8 @@ app.get(
 const importFileSchema = z.object({
   fileName: z.string().min(1),
   mimeType: z.string().min(1),
-  base64Data: z.string().min(1)
+  base64Data: z.string().min(1),
+  listName: z.string().trim().min(1).max(120).optional()
 });
 
 app.post(
@@ -890,11 +891,13 @@ app.post(
 
     const { workspaceId } = await resolveWorkspaceContext(req, res);
     const parsedImport = parseFirmsFromUpload(parsed.data.base64Data, parsed.data.fileName, parsed.data.mimeType, workspaceId);
+    const batchId = uuid();
+    const listName = parsed.data.listName?.trim() || parsed.data.fileName;
     if (parsedImport.firms.length === 0) {
       store.addImportBatch({
-        id: uuid(),
+        id: batchId,
         workspaceId,
-        sourceName: parsed.data.fileName,
+        sourceName: listName,
         sourceType: parsedImport.sourceType,
         importedCount: 0,
         importedAt: new Date().toISOString(),
@@ -909,13 +912,17 @@ app.post(
     }
 
     for (const firm of parsedImport.firms) {
-      store.upsertFirm(firm);
+      store.upsertFirm({
+        ...firm,
+        importBatchId: batchId,
+        sourceListName: listName
+      });
     }
 
     store.addImportBatch({
-      id: uuid(),
+      id: batchId,
       workspaceId,
-      sourceName: parsed.data.fileName,
+      sourceName: listName,
       sourceType: parsedImport.sourceType,
       importedCount: parsedImport.firms.length,
       importedAt: new Date().toISOString(),
@@ -923,11 +930,14 @@ app.post(
     });
 
     await store.persist();
-    res.json({ imported: parsedImport.firms.length, sourceType: parsedImport.sourceType });
+    res.json({ imported: parsedImport.firms.length, sourceType: parsedImport.sourceType, listName, batchId });
   })
 );
 
-const importDriveSchema = z.object({ link: z.string().url() });
+const importDriveSchema = z.object({
+  link: z.string().url(),
+  listName: z.string().trim().min(1).max(120).optional()
+});
 
 app.post(
   "/api/firms/import-drive",
@@ -939,14 +949,16 @@ app.post(
     }
 
     const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const batchId = uuid();
+    const listName = parsed.data.listName?.trim() || parsed.data.link;
 
     try {
       const parsedImport = await parseFirmsFromGoogleDriveLink(parsed.data.link, workspaceId);
       if (parsedImport.firms.length === 0) {
         store.addImportBatch({
-          id: uuid(),
+          id: batchId,
           workspaceId,
-          sourceName: parsed.data.link,
+          sourceName: listName,
           sourceType: "google_drive",
           importedCount: 0,
           importedAt: new Date().toISOString(),
@@ -960,13 +972,17 @@ app.post(
         return;
       }
       for (const firm of parsedImport.firms) {
-        store.upsertFirm(firm);
+        store.upsertFirm({
+          ...firm,
+          importBatchId: batchId,
+          sourceListName: listName
+        });
       }
 
       store.addImportBatch({
-        id: uuid(),
+        id: batchId,
         workspaceId,
-        sourceName: parsed.data.link,
+        sourceName: listName,
         sourceType: "google_drive",
         importedCount: parsedImport.firms.length,
         importedAt: new Date().toISOString(),
@@ -974,12 +990,12 @@ app.post(
       });
 
       await store.persist();
-      res.json({ imported: parsedImport.firms.length, sourceType: "google_drive" });
+      res.json({ imported: parsedImport.firms.length, sourceType: "google_drive", listName, batchId });
     } catch (error) {
       store.addImportBatch({
-        id: uuid(),
+        id: batchId,
         workspaceId,
-        sourceName: parsed.data.link,
+        sourceName: listName,
         sourceType: "google_drive",
         importedCount: 0,
         importedAt: new Date().toISOString(),
@@ -1002,8 +1018,23 @@ app.get(
       return;
     }
 
-    const events = store.listEvents(workspaceId).filter((event) => event.firmId === firm.id).slice(0, 20);
-    res.json({ firm, events });
+    const events = store
+      .listEvents(workspaceId)
+      .filter((event) => event.firmId === firm.id)
+      .sort((a, b) => (a.attemptedAt > b.attemptedAt ? -1 : 1))
+      .slice(0, 80);
+    const submissionRequests = store
+      .listSubmissionRequests(workspaceId)
+      .filter((request) => request.firmId === firm.id)
+      .sort((a, b) => (a.preparedAt > b.preparedAt ? -1 : 1))
+      .slice(0, 50);
+    const logs = store
+      .listLogs(workspaceId)
+      .filter((log) => log.firmId === firm.id)
+      .sort((a, b) => (a.timestamp > b.timestamp ? -1 : 1))
+      .slice(0, 80);
+
+    res.json({ firm, events, submissionRequests, logs });
   })
 );
 

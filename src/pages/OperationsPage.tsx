@@ -1,5 +1,5 @@
 import dayjs from "dayjs";
-import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   activateWorkspace,
@@ -71,12 +71,18 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   const [exportingSubmissions, setExportingSubmissions] = useState(false);
 
   const [driveLink, setDriveLink] = useState("");
+  const [listName, setListName] = useState("");
   const [runMode, setRunMode] = useState<"dry_run" | "production">("dry_run");
   const [runScope, setRunScope] = useState<"all" | "filtered">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | SubmissionRequest["status"]>("pending_approval");
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [previewId, setPreviewId] = useState<string>();
+
+  const [leadQuery, setLeadQuery] = useState("");
+  const [leadStageFilter, setLeadStageFilter] = useState<string>("all");
+  const [leadListFilter, setLeadListFilter] = useState<string>("all");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const refresh = useCallback(async () => {
     if (!workspaceId) return;
@@ -126,6 +132,20 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   const completedImports = useMemo(() => imports.filter((entry) => entry.status === "completed"), [imports]);
   const failedImports = useMemo(() => imports.filter((entry) => entry.status === "failed"), [imports]);
   const runningRuns = useMemo(() => runs.filter((run) => run.status === "running").sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1)), [runs]);
+  const availableLists = useMemo(() => [...new Set(completedImports.map((entry) => entry.sourceName))], [completedImports]);
+
+  const leadResults = useMemo(() => {
+    const q = leadQuery.trim().toLowerCase();
+    return firms
+      .filter((firm) => {
+        const qOk = q.length === 0 || firm.name.toLowerCase().includes(q) || firm.website.toLowerCase().includes(q);
+        const stageOk = leadStageFilter === "all" || firm.stage === leadStageFilter;
+        const listOk = leadListFilter === "all" || firm.sourceListName === leadListFilter;
+        return qOk && stageOk && listOk;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [firms, leadQuery, leadStageFilter, leadListFilter]);
+
   const queueSummary = useMemo(
     () => ({
       pendingApproval: queue.filter((item) => item.status === "pending_approval").length,
@@ -145,6 +165,10 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
       setPreviewId(filteredQueue[0]?.id);
     }
   }, [filteredQueue, previewId]);
+
+  const onChooseFile = (): void => {
+    fileInputRef.current?.click();
+  };
 
   const onUpload = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
     if (!workspaceId) return;
@@ -167,9 +191,11 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
         workspaceId,
         fileName: file.name,
         mimeType: file.type || "application/octet-stream",
-        base64Data
+        base64Data,
+        listName: listName.trim() || undefined
       });
-      setNotice(`Imported ${result.imported} investors from ${file.name}.`);
+      setNotice(`Imported ${result.imported} investors into list '${result.listName ?? (listName || file.name)}'.`);
+      setListName("");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed.");
@@ -191,9 +217,10 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
 
     setImportingDrive(true);
     try {
-      const result = await importFirmsFromDrive(workspaceId, driveLink.trim());
-      setNotice(`Imported ${result.imported} investors from Google Drive.`);
+      const result = await importFirmsFromDrive(workspaceId, driveLink.trim(), listName.trim() || undefined);
+      setNotice(`Imported ${result.imported} investors into list '${result.listName ?? (listName || "Google Drive list")}'.`);
       setDriveLink("");
+      setListName("");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Google Drive import failed.");
@@ -354,12 +381,12 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
       <div className="mb-8 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Operations</h1>
-          <p className="mt-1 text-slate-500">Run submissions, manage approvals, and monitor execution progress.</p>
+          <p className="mt-1 text-slate-500">Run submissions, manage approvals, and track every imported lead.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="secondary" onClick={() => void refresh()}>Refresh</Button>
           <Button size="sm" variant="secondary" onClick={() => void onExportFirms()} disabled={exportingFirms}>
-            {exportingFirms ? "Exporting..." : "Export Investors"}
+            {exportingFirms ? "Exporting..." : "Export Leads"}
           </Button>
           <Button size="sm" variant="secondary" onClick={() => void onExportSubmissions()} disabled={exportingSubmissions}>
             {exportingSubmissions ? "Exporting..." : "Export Submissions"}
@@ -370,23 +397,12 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
       {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
       {notice ? <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{notice}</div> : null}
 
-      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-          <div className="text-xs text-slate-500">Pending approvals</div>
-          <div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.pendingApproval}</div>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-          <div className="text-xs text-slate-500">Retry queue</div>
-          <div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.pendingRetry}</div>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-          <div className="text-xs text-slate-500">Failed</div>
-          <div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.failed}</div>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-          <div className="text-xs text-slate-500">Completed</div>
-          <div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.completed}</div>
-        </div>
+      <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-5">
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Leads</div><div className="mt-1 text-2xl font-bold text-slate-800">{firms.length}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Lists</div><div className="mt-1 text-2xl font-bold text-slate-800">{availableLists.length}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Pending approvals</div><div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.pendingApproval}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Retry queue</div><div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.pendingRetry}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Failed</div><div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.failed}</div></div>
       </div>
 
       <div className="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
@@ -395,16 +411,23 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
             <h2 className="text-sm font-semibold">Import Investor Lists</h2>
           </CardHeader>
           <CardBody className="space-y-4">
-            <label className="flex cursor-pointer items-center justify-between rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
+            <Input
+              label="List Name (optional but recommended)"
+              placeholder="e.g. US Seed VCs - Feb 2026"
+              value={listName}
+              onChange={(event) => setListName(event.target.value)}
+            />
+
+            <div className="flex items-center justify-between rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
               <div>
                 <div className="text-sm font-semibold text-slate-800">Upload CSV or Excel</div>
                 <div className="text-xs text-slate-500">Accepted: .csv, .xlsx, .xls</div>
               </div>
-              <Button size="sm" variant="secondary" type="button" className="pointer-events-none">
+              <Button size="sm" variant="secondary" onClick={onChooseFile} disabled={uploading}>
                 {uploading ? "Uploading..." : "Choose file"}
               </Button>
-              <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(event) => void onUpload(event)} />
-            </label>
+              <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(event) => void onUpload(event)} />
+            </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
               <Input
@@ -420,10 +443,16 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
             <div className="space-y-2">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Completed Imports</p>
               <div className="flex max-h-24 flex-wrap gap-2 overflow-auto">
-                {completedImports.slice(0, 20).map((entry) => (
-                  <span key={entry.id} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700">
+                {completedImports.slice(0, 24).map((entry) => (
+                  <button
+                    type="button"
+                    key={entry.id}
+                    onClick={() => setLeadListFilter(entry.sourceName)}
+                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                    title="Filter lead explorer by this list"
+                  >
                     {entry.sourceName.length > 34 ? `${entry.sourceName.slice(0, 34)}...` : entry.sourceName} ({entry.importedCount})
-                  </span>
+                  </button>
                 ))}
                 {completedImports.length === 0 ? <span className="text-xs text-slate-400">No completed imports yet.</span> : null}
               </div>
@@ -447,7 +476,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                 <option value="production">Live execution</option>
               </Select>
               <Select value={runScope} onChange={(event) => setRunScope(event.target.value as "all" | "filtered")} label="Scope">
-                <option value="all">All investors</option>
+                <option value="all">All leads</option>
                 <option value="filtered">Filtered queue firms</option>
               </Select>
               <div className="flex items-end">
@@ -483,7 +512,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_340px]">
+      <div className="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-[1fr_340px]">
         <Card>
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -499,11 +528,6 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                 </Button>
               </div>
             </div>
-            {selectedIds.length > 0 ? (
-              <div className="mt-3 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-800">
-                {selectedIds.length} selected. You can bulk approve/reject from the action buttons.
-              </div>
-            ) : null}
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
               <Input placeholder="Search investor" value={query} onChange={(event) => setQuery(event.target.value)} />
               <Select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}>
@@ -516,39 +540,9 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                 <option value="rejected">Rejected</option>
               </Select>
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {[
-                { key: "pending_approval", label: "Pending approval" },
-                { key: "pending_retry", label: "Retry queue" },
-                { key: "failed", label: "Failed" },
-                { key: "completed", label: "Completed" }
-              ].map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  onClick={() => setStatusFilter(item.key as typeof statusFilter)}
-                  className={`rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
-                    statusFilter === item.key
-                      ? "border-primary-300 bg-primary-50 text-primary-700"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
-              {statusFilter !== "all" ? (
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter("all")}
-                  className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                >
-                  Clear filter
-                </button>
-              ) : null}
-            </div>
           </CardHeader>
           <CardBody className="p-0">
-            <div className="max-h-[620px] overflow-auto">
+            <div className="max-h-[560px] overflow-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left">
@@ -560,7 +554,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredQueue.slice(0, 120).map((item) => {
+                  {filteredQueue.slice(0, 140).map((item) => {
                     const selected = selectedIds.includes(item.id);
                     return (
                       <tr
@@ -655,6 +649,80 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
           </CardBody>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold">Lead Explorer ({leadResults.length})</h2>
+            <div className="text-xs text-slate-500">Search any imported company and open its timeline/logs</div>
+          </div>
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <Input placeholder="Search by company or website" value={leadQuery} onChange={(event) => setLeadQuery(event.target.value)} />
+            <Select value={leadListFilter} onChange={(event) => setLeadListFilter(event.target.value)}>
+              <option value="all">All lists</option>
+              {availableLists.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </Select>
+            <Select value={leadStageFilter} onChange={(event) => setLeadStageFilter(event.target.value)}>
+              <option value="all">All stages</option>
+              {[
+                "lead",
+                "researching",
+                "qualified",
+                "form_discovered",
+                "form_filled",
+                "submitted",
+                "review",
+                "won",
+                "lost"
+              ].map((stage) => (
+                <option key={stage} value={stage}>{stage.replaceAll("_", " ")}</option>
+              ))}
+            </Select>
+          </div>
+        </CardHeader>
+        <CardBody className="p-0">
+          <div className="max-h-[520px] overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left">
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Company</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Source List</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Stage</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Status Reason</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Last Updated</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leadResults.slice(0, 300).map((firm) => (
+                  <tr key={firm.id} className="border-b border-slate-50 hover:bg-slate-50">
+                    <td className="px-4 py-2">
+                      <div className="font-medium text-slate-800">{firm.name}</div>
+                      <div className="text-xs text-slate-500">{firm.website}</div>
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-600">{firm.sourceListName ?? "-"}</td>
+                    <td className="px-4 py-2"><StatusPill status={firm.stage} /></td>
+                    <td className="px-4 py-2 text-xs text-slate-600 max-w-[320px] truncate">{firm.statusReason}</td>
+                    <td className="px-4 py-2 text-xs text-slate-500">{firm.lastTouchedAt ? dayjs(firm.lastTouchedAt).format("MMM D, YYYY") : "-"}</td>
+                    <td className="px-4 py-2">
+                      <Button size="sm" variant="secondary" onClick={() => navigate(`/projects/${workspaceId}/leads/${firm.id}`)}>
+                        Open
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+                {leadResults.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-8 text-center text-slate-400">No leads found for current filters.</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </CardBody>
+      </Card>
     </div>
   );
 }

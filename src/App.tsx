@@ -14,6 +14,7 @@ const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) =
 const OperationsPage = lazy(() => import("./pages/OperationsPage").then((module) => ({ default: module.OperationsPage })));
 const RunDetailPage = lazy(() => import("./pages/RunDetailPage").then((module) => ({ default: module.RunDetailPage })));
 const SubmissionDetailPage = lazy(() => import("./pages/SubmissionDetailPage").then((module) => ({ default: module.SubmissionDetailPage })));
+const LeadDetailPage = lazy(() => import("./pages/LeadDetailPage").then((module) => ({ default: module.LeadDetailPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 
 function ProtectedRoute({ user, children }: { user: AuthUser | null; children: JSX.Element }): JSX.Element {
@@ -128,6 +129,14 @@ function App(): JSX.Element {
               element={
                 <ProtectedRoute user={authUser}>
                   <SubmissionDetailPage user={authUser as AuthUser} />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:workspaceId/leads/:firmId"
+              element={
+                <ProtectedRoute user={authUser}>
+                  <LeadDetailPage />
                 </ProtectedRoute>
               }
             />

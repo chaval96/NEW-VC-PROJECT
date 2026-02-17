@@ -9,6 +9,7 @@ export type {
   CreditTransaction,
   CreditPackage,
   Firm,
+  FirmDetail,
   FirmContact,
   ImportBatch,
   OpsAlert,

@@ -46,6 +46,8 @@ export interface FirmContact {
 export interface Firm {
   id: string;
   workspaceId: string;
+  importBatchId?: string;
+  sourceListName?: string;
   name: string;
   website: string;
   geography: string;
@@ -311,6 +313,13 @@ export interface OverviewResponse {
 export interface RunDetail {
   run: CampaignRun;
   tasks: AgentTaskResult[];
+  logs: RunLog[];
+}
+
+export interface FirmDetail {
+  firm: Firm;
+  events: SubmissionEvent[];
+  submissionRequests: SubmissionRequest[];
   logs: RunLog[];
 }
 

@@ -6,6 +6,7 @@ import type {
   AuthUser,
   CampaignRun,
   Firm,
+  FirmDetail,
   ImportBatch,
   OverviewResponse,
   Profile,
@@ -212,23 +213,38 @@ export function importFirmsFile(payload: {
   fileName: string;
   mimeType: string;
   base64Data: string;
-}): Promise<{ imported: number; sourceType: string; runId?: string }> {
+  listName?: string;
+}): Promise<{ imported: number; sourceType: string; runId?: string; listName?: string; batchId?: string }> {
   const { workspaceId, ...rest } = payload;
-  return api<{ imported: number; sourceType: string; runId?: string }>(withWorkspace("/api/firms/import-file", workspaceId), {
-    method: "POST",
-    body: JSON.stringify(rest)
-  });
+  return api<{ imported: number; sourceType: string; runId?: string; listName?: string; batchId?: string }>(
+    withWorkspace("/api/firms/import-file", workspaceId),
+    {
+      method: "POST",
+      body: JSON.stringify(rest)
+    }
+  );
 }
 
-export function importFirmsFromDrive(workspaceId: string, link: string): Promise<{ imported: number; sourceType: string; runId?: string }> {
-  return api<{ imported: number; sourceType: string; runId?: string }>(withWorkspace("/api/firms/import-drive", workspaceId), {
-    method: "POST",
-    body: JSON.stringify({ link })
-  });
+export function importFirmsFromDrive(
+  workspaceId: string,
+  link: string,
+  listName?: string
+): Promise<{ imported: number; sourceType: string; runId?: string; listName?: string; batchId?: string }> {
+  return api<{ imported: number; sourceType: string; runId?: string; listName?: string; batchId?: string }>(
+    withWorkspace("/api/firms/import-drive", workspaceId),
+    {
+      method: "POST",
+      body: JSON.stringify({ link, listName })
+    }
+  );
 }
 
 export function getSubmissionQueue(workspaceId: string): Promise<SubmissionRequest[]> {
   return api<SubmissionRequest[]>(withWorkspace("/api/submissions/queue", workspaceId));
+}
+
+export function getFirmDetail(workspaceId: string, firmId: string): Promise<FirmDetail> {
+  return api<FirmDetail>(withWorkspace(`/api/firms/${firmId}`, workspaceId));
 }
 
 export function getSubmissionDetail(workspaceId: string, requestId: string): Promise<SubmissionDetail> {

@@ -2,6 +2,7 @@ export type {
   CampaignRun,
   CompanyProfile,
   Firm,
+  FirmDetail,
   ImportBatch,
   OverviewResponse,
   PipelineStage,
