@@ -1,13 +1,6 @@
-import { ChangeEvent, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import {
-  activateWorkspace,
-  getProfile,
-  getWorkspaceReadiness,
-  importFirmsFile,
-  importFirmsFromDrive,
-  updateWorkspaceProfile
-} from "../api";
+import { activateWorkspace, getProfile, updateWorkspaceProfile } from "../api";
 import { Button } from "../components/ui/Button";
 import { Card, CardBody } from "../components/ui/Card";
 import { Input, Textarea } from "../components/ui/Input";
@@ -18,7 +11,6 @@ const STEPS = [
   { label: "Company" },
   { label: "Fundraising" },
   { label: "Metrics" },
-  { label: "Investors" },
   { label: "Ready" }
 ];
 
@@ -39,35 +31,16 @@ const defaultProfile: CompanyProfile = {
 
 const strictEmailPattern = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
 const urlPattern = /^https?:\/\/.+/i;
-const drivePattern = /^https:\/\/(docs|drive)\.google\.com\//i;
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result !== "string") {
-        reject(new Error("Failed"));
-        return;
-      }
-      resolve(result.split(",")[1] ?? "");
-    };
-    reader.onerror = () => reject(new Error("Read failed"));
-    reader.readAsDataURL(file);
-  });
-}
 
 export function OnboardingPage(): JSX.Element {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [profile, setProfile] = useState<CompanyProfile>(defaultProfile);
-  const [driveLink, setDriveLink] = useState("");
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
-  const [investorCount, setInvestorCount] = useState(0);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string | undefined>>({});
 
   const p = useCallback((patch: Partial<CompanyProfile>) => setProfile((prev) => ({ ...prev, ...patch })), []);
@@ -88,9 +61,8 @@ export function OnboardingPage(): JSX.Element {
     const load = async (): Promise<void> => {
       try {
         await activateWorkspace(workspaceId);
-        const [existing, readiness] = await Promise.all([getProfile(workspaceId), getWorkspaceReadiness(workspaceId)]);
+        const existing = await getProfile(workspaceId);
         setProfile(existing);
-        setInvestorCount(readiness.investorCount);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load project");
       } finally {
@@ -124,10 +96,6 @@ export function OnboardingPage(): JSX.Element {
       }
     }
 
-    if (currentStep === 3 && investorCount === 0) {
-      nextErrors.investors = "Import at least one investor list before continuing.";
-    }
-
     setFieldErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
   };
@@ -149,63 +117,9 @@ export function OnboardingPage(): JSX.Element {
     }
   };
 
-  const onUpload = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
-    if (!workspaceId) return;
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setError(undefined);
-    setNotice(undefined);
-    if (![".csv", ".xlsx", ".xls"].some((ext) => file.name.toLowerCase().endsWith(ext))) {
-      setError("Only CSV, XLSX or XLS files are supported.");
-      event.target.value = "";
-      return;
-    }
-
-    try {
-      const base64Data = await fileToBase64(file);
-      const result = await importFirmsFile({
-        workspaceId,
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        base64Data
-      });
-      const readiness = await getWorkspaceReadiness(workspaceId);
-      setInvestorCount(readiness.investorCount);
-      setNotice(`Imported ${result.imported} investors from ${file.name}.`);
-      setFieldErrors((prev) => ({ ...prev, investors: undefined }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      event.target.value = "";
-    }
-  };
-
-  const onImportDrive = async (): Promise<void> => {
-    if (!workspaceId) return;
-    if (!driveLink.trim()) {
-      setError("Google Drive link is required.");
-      return;
-    }
-    if (!drivePattern.test(driveLink.trim())) {
-      setError("Please enter a valid Google Drive share link.");
-      return;
-    }
-    try {
-      const result = await importFirmsFromDrive(workspaceId, driveLink.trim());
-      const readiness = await getWorkspaceReadiness(workspaceId);
-      setInvestorCount(readiness.investorCount);
-      setNotice(`Imported ${result.imported} investors from Google Drive.`);
-      setFieldErrors((prev) => ({ ...prev, investors: undefined }));
-      setDriveLink("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Google Drive import failed");
-    }
-  };
-
   const onFinish = async (): Promise<void> => {
     if (!workspaceId) return;
-    if (!validateStep(0) || !validateStep(1) || !validateStep(3)) return;
+    if (!validateStep(0) || !validateStep(1)) return;
 
     setSaving(true);
     setError(undefined);
@@ -369,50 +283,9 @@ export function OnboardingPage(): JSX.Element {
 
           {step === 3 ? (
             <div className="space-y-4">
-              <h2 className="text-lg font-semibold">Import Investor Lists</h2>
-              <p className="text-sm text-slate-500">
-                Upload CSV/Excel files or connect a Google Drive file. You can start processing later from the dashboard.
-              </p>
-
-              <label className="flex cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-8 transition-colors hover:border-primary-400">
-                <div className="text-center">
-                  <p className="font-medium text-slate-700">Upload CSV / XLSX</p>
-                  <p className="mt-1 text-xs text-slate-400">Drag and drop or click to select</p>
-                </div>
-                <input type="file" className="hidden" accept=".csv,.xlsx,.xls" onChange={(event) => void onUpload(event)} />
-              </label>
-
-              <div className="flex flex-col gap-3 sm:flex-row">
-                <Input
-                  placeholder="Google Drive share link"
-                  error={fieldErrors.investors}
-                  value={driveLink}
-                  onChange={(event) => setDriveLink(event.target.value)}
-                  className="sm:flex-1"
-                />
-                <Button variant="secondary" onClick={() => void onImportDrive()}>
-                  Import from Drive
-                </Button>
-              </div>
-
-              <p className="text-xs text-slate-500">Imported investors: {investorCount}</p>
-
-              <div className="flex gap-3">
-                <Button variant="secondary" onClick={() => setStep(2)}>
-                  Back
-                </Button>
-                <Button onClick={() => void saveAndAdvance()} disabled={saving}>
-                  Next
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
-          {step === 4 ? (
-            <div className="space-y-4">
               <h2 className="text-lg font-semibold">Ready to Run</h2>
               <p className="text-sm text-slate-500">
-                Your project knowledge base is configured. Continue to dashboard to review pipeline and run VC form submission workflows.
+                Knowledge base is configured. Next, import investor lists from the Operations page and start execution runs.
               </p>
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm">
                 <p>
@@ -420,11 +293,14 @@ export function OnboardingPage(): JSX.Element {
                 </p>
               </div>
               <div className="flex gap-3">
-                <Button variant="secondary" onClick={() => setStep(3)}>
+                <Button variant="secondary" onClick={() => setStep(2)}>
                   Back
                 </Button>
                 <Button onClick={() => void onFinish()} disabled={saving}>
                   {saving ? "Saving..." : "Go to Dashboard"}
+                </Button>
+                <Button variant="secondary" onClick={() => navigate(`/projects/${workspaceId}/operations`)}>
+                  Open Operations
                 </Button>
               </div>
             </div>

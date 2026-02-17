@@ -39,7 +39,7 @@ function parseCsvLine(line: string): string[] {
 }
 
 function normalizeHeader(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return value.replace(/^\ufeff/, "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
 function toInvestorType(value: string): Firm["investorType"] {
@@ -50,21 +50,86 @@ function toInvestorType(value: string): Firm["investorType"] {
   return "Other";
 }
 
+function firstDefined(row: Record<string, string>, keys: string[]): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (value && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function firstByHeaderPattern(row: Record<string, string>, patterns: RegExp[]): string {
+  for (const [key, value] of Object.entries(row)) {
+    if (!value || value.trim().length === 0) continue;
+    if (patterns.some((pattern) => pattern.test(key))) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function pickValue(row: Record<string, string>, keys: string[], patterns: RegExp[]): string {
+  return firstDefined(row, keys) || firstByHeaderPattern(row, patterns);
+}
+
+function normalizeWebsite(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+  return "";
+}
+
 function mapRowsToFirms(rows: Record<string, string>[], workspaceId: string): Firm[] {
   const firms: Firm[] = [];
+  const seen = new Set<string>();
 
   for (const data of rows) {
-    const name = data.company || data.firm || data.investor || data.name;
-    const website = data.website || data.domain || data.url;
+    const name = pickValue(
+      data,
+      ["company", "company_name", "firm", "firm_name", "investor", "investor_name", "name", "fund_name"],
+      [/company/, /^firm/, /investor/, /^name$/, /fund/]
+    );
+    const websiteRaw = pickValue(
+      data,
+      ["website", "company_website", "domain", "primary_domain", "url", "site", "homepage"],
+      [/website/, /domain/, /url/, /site/, /homepage/]
+    );
+    const website = normalizeWebsite(websiteRaw);
 
     if (!name || !website) {
       continue;
     }
 
-    const geography = data.location || data.country || data.geography || "Unknown";
-    const typeInput = data.investor_type || data.type || "VC";
-    const checkSizeRange = data.check_size || data.check_size_range || data.ticket_size || "Unknown";
-    const focusInput = data.focus || data.focus_sectors || data.sectors || "";
+    const dedupeKey = `${name.toLowerCase()}::${website.toLowerCase()}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+
+    const geography =
+      pickValue(
+        data,
+        ["location", "country", "geography", "hq", "hq_location", "region"],
+        [/location/, /country/, /geo/, /region/, /^hq/]
+      ) || "Unknown";
+    const typeInput =
+      pickValue(data, ["investor_type", "type", "firm_type", "category"], [/type/, /category/, /investor/]) || "VC";
+    const checkSizeRange =
+      pickValue(
+        data,
+        ["check_size", "check_size_range", "ticket_size", "investment_size", "check", "ticket", "typical_check"],
+        [/check/, /ticket/, /investment/, /size/]
+      ) || "Unknown";
+    const focusInput = pickValue(
+      data,
+      ["focus", "focus_sectors", "sectors", "sector", "verticals", "industry_focus", "thesis"],
+      [/focus/, /sector/, /vertical/, /industry/, /thesis/]
+    );
     const focusSectors = focusInput
       .split(/[;,]/)
       .map((value) => value.trim())
@@ -186,30 +251,63 @@ function extractDriveFileId(url: string): string | undefined {
 
 export async function parseFirmsFromGoogleDriveLink(link: string, workspaceId: string): Promise<ParsedImportResult> {
   const fileId = extractDriveFileId(link);
-  if (!fileId) {
+  const sheetIdMatch = link.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  const sheetId = sheetIdMatch?.[1];
+
+  const candidates: Array<{ url: string; sourceType: "csv" | "excel" }> = [];
+  if (sheetId) {
+    candidates.push({ url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx`, sourceType: "excel" });
+    candidates.push({ url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`, sourceType: "csv" });
+  }
+  if (fileId) {
+    candidates.push({ url: `https://drive.google.com/uc?export=download&id=${fileId}`, sourceType: "excel" });
+    candidates.push({ url: `https://drive.usercontent.google.com/download?id=${fileId}&export=download`, sourceType: "excel" });
+    candidates.push({ url: `https://drive.google.com/uc?export=download&id=${fileId}`, sourceType: "csv" });
+  }
+
+  if (candidates.length === 0) {
     throw new Error("Could not extract Google Drive file id from link.");
   }
 
-  const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
-  const response = await fetch(downloadUrl);
+  let lastStatus: number | undefined;
+  let lastError: string | undefined;
 
-  if (!response.ok) {
-    throw new Error(`Google Drive file download failed with status ${response.status}`);
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate.url);
+      if (!response.ok) {
+        lastStatus = response.status;
+        continue;
+      }
+
+      const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+      const looksLikeExcel =
+        candidate.sourceType === "excel" ||
+        contentType.includes("spreadsheet") ||
+        contentType.includes("excel") ||
+        contentType.includes("octet-stream");
+
+      if (looksLikeExcel) {
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const firms = parseXlsx(buffer, workspaceId);
+        if (firms.length > 0) {
+          return { firms, sourceType: "excel" };
+        }
+      } else {
+        const text = await response.text();
+        const firms = parseFirmsCsv(text, workspaceId);
+        if (firms.length > 0) {
+          return { firms, sourceType: "csv" };
+        }
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Unknown download failure";
+    }
   }
 
-  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-
-  if (contentType.includes("spreadsheet") || contentType.includes("excel") || contentType.includes("octet-stream")) {
-    const buffer = Buffer.from(await response.arrayBuffer());
-    return {
-      firms: parseXlsx(buffer, workspaceId),
-      sourceType: "excel"
-    };
+  if (lastStatus) {
+    throw new Error(`Google Drive file download failed with status ${lastStatus}`);
   }
 
-  const text = await response.text();
-  return {
-    firms: parseFirmsCsv(text, workspaceId),
-    sourceType: "csv"
-  };
+  throw new Error(lastError ?? "Could not parse investors from this Google Drive file. Ensure it is publicly accessible.");
 }

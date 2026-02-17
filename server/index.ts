@@ -890,6 +890,23 @@ app.post(
 
     const { workspaceId } = await resolveWorkspaceContext(req, res);
     const parsedImport = parseFirmsFromUpload(parsed.data.base64Data, parsed.data.fileName, parsed.data.mimeType, workspaceId);
+    if (parsedImport.firms.length === 0) {
+      store.addImportBatch({
+        id: uuid(),
+        workspaceId,
+        sourceName: parsed.data.fileName,
+        sourceType: parsedImport.sourceType,
+        importedCount: 0,
+        importedAt: new Date().toISOString(),
+        status: "failed",
+        note: "No valid investors found. Include at least company/fund name and website/domain columns."
+      });
+      await store.persist();
+      res.status(400).json({
+        message: "No valid investors found in file. Required columns include company/fund name and website/domain."
+      });
+      return;
+    }
 
     for (const firm of parsedImport.firms) {
       store.upsertFirm(firm);
@@ -925,6 +942,23 @@ app.post(
 
     try {
       const parsedImport = await parseFirmsFromGoogleDriveLink(parsed.data.link, workspaceId);
+      if (parsedImport.firms.length === 0) {
+        store.addImportBatch({
+          id: uuid(),
+          workspaceId,
+          sourceName: parsed.data.link,
+          sourceType: "google_drive",
+          importedCount: 0,
+          importedAt: new Date().toISOString(),
+          status: "failed",
+          note: "No valid investors found. Include at least company/fund name and website/domain columns."
+        });
+        await store.persist();
+        res.status(400).json({
+          message: "No valid investors found in Google Drive file. Required columns include company/fund name and website/domain."
+        });
+        return;
+      }
       for (const firm of parsedImport.firms) {
         store.upsertFirm(firm);
       }
