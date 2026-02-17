@@ -7,7 +7,7 @@ import { StateStore } from "./domain/store.js";
 import { buildTemplateProfile } from "./domain/seed.js";
 import type { AssessmentResult, CompanyProfile, PipelineStage, SubmissionStatus, Workspace } from "./domain/types.js";
 import { CampaignOrchestrator } from "./orchestrator/workflow.js";
-import { buildOverview } from "./services/analytics.js";
+import { buildOverview, getCachedOverview } from "./services/analytics.js";
 import { AuthService, type AuthUser } from "./services/auth-service.js";
 import { CreditService } from "./services/credit-service.js";
 import { parseFirmsFromGoogleDriveLink, parseFirmsFromUpload } from "./services/import-parser.js";
@@ -653,15 +653,22 @@ app.get(
   "/api/dashboard/overview",
   asyncHandler(async (req, res) => {
     const { workspace, workspaceId } = await resolveWorkspaceContext(req, res);
-    const overview = buildOverview(
-      workspace,
-      store.listFirms(workspaceId),
-      store.listEvents(workspaceId),
-      store.listRuns(workspaceId),
-      store.listSubmissionRequests(workspaceId),
-      store.listTasks(workspaceId),
-      store.listLogs(workspaceId)
-    );
+
+    // Use cached analytics if available (15s TTL) unless ?fresh=true
+    const skipCache = req.query.fresh === "true";
+    let overview = skipCache ? undefined : getCachedOverview(workspaceId);
+
+    if (!overview) {
+      overview = buildOverview(
+        workspace,
+        store.listFirms(workspaceId),
+        store.listEvents(workspaceId),
+        store.listRuns(workspaceId),
+        store.listSubmissionRequests(workspaceId),
+        store.listTasks(workspaceId),
+        store.listLogs(workspaceId)
+      );
+    }
 
     res.json({ ...overview, creditBalance: creditService.getBalance(workspaceId) });
   })

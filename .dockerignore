@@ -1,7 +1,44 @@
+# Dependencies
 node_modules
-npm-debug.log
-.git
-.gitignore
+npm-debug.log*
+
+# Build artifacts
 dist
 dist-server
+
+# Dev state
 server/data/state.json
+
+# Version control
+.git
+.gitignore
+
+# IDE and OS
+.vscode
+.idea
+.DS_Store
+*.swp
+*.swo
+
+# Environment files (secrets)
+.env
+.env.local
+.env.production
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github
+
+# Documentation
+*.md
+LICENSE
+
+# Dev/test tooling
+.claude
+tmp
+coverage
+__tests__

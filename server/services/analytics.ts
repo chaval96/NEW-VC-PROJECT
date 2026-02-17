@@ -12,6 +12,29 @@ import type {
   Workspace
 } from "../domain/types.js";
 
+// ── Analytics Cache ─────────────────────────────────────────────────
+// Cache overview results for 15 seconds to avoid recalculating on every request.
+const CACHE_TTL_MS = 15_000;
+const overviewCache = new Map<string, { data: Omit<OverviewResponse, "creditBalance">; expiresAt: number }>();
+
+export function getCachedOverview(workspaceId: string): Omit<OverviewResponse, "creditBalance"> | undefined {
+  const entry = overviewCache.get(workspaceId);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    overviewCache.delete(workspaceId);
+    return undefined;
+  }
+  return entry.data;
+}
+
+export function invalidateOverviewCache(workspaceId: string): void {
+  overviewCache.delete(workspaceId);
+}
+
+function cacheOverview(workspaceId: string, data: Omit<OverviewResponse, "creditBalance">): void {
+  overviewCache.set(workspaceId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
 const stageOrder: PipelineStage[] = [
   "lead",
   "researching",
@@ -141,7 +164,7 @@ export function buildOverview(
     .sort((a, b) => (a.createdAt > b.createdAt ? -1 : 1))
     .slice(0, 12);
 
-  return {
+  const result = {
     workspace: {
       id: workspace.id,
       name: workspace.name
@@ -170,4 +193,8 @@ export function buildOverview(
       alerts
     }
   };
+
+  // Cache the result
+  cacheOverview(workspace.id, result);
+  return result;
 }

@@ -1,4 +1,5 @@
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Card, CardBody, CardHeader } from "./ui/Card";
 
 interface PerformanceFunnelProps {
   attempts: number;
@@ -24,31 +25,35 @@ export function PerformanceFunnel({ attempts, discovered, filled, submitted, blo
   const top = attempts || 1;
 
   return (
-    <div className="card card-pad">
-      <h3 className="card-title">Form Submission Funnel</h3>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8, marginBottom: 8 }}>
-        {data.map((item) => (
-          <div key={item.stage} style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 12, color: "#5f7288" }}>{((item.value / top) * 100).toFixed(1)}%</div>
-            <div style={{ fontSize: 18, fontFamily: "IBM Plex Mono, monospace" }}>{item.value}</div>
-          </div>
-        ))}
-      </div>
-      <div style={{ width: "100%", height: 280 }}>
-        <ResponsiveContainer>
-          <BarChart data={data} margin={{ top: 8, right: 8, left: -12, bottom: 12 }}>
-            <CartesianGrid stroke="#e8eef7" vertical={false} />
-            <XAxis dataKey="stage" tick={{ fill: "#566b82", fontSize: 12 }} interval={0} />
-            <YAxis tick={{ fill: "#566b82", fontSize: 12 }} />
-            <Tooltip formatter={(value: number) => [value.toLocaleString(), "Count"]} />
-            <Bar dataKey="value" radius={[8, 8, 0, 0]}>
-              {data.map((entry, index) => (
-                <Cell key={entry.stage} fill={colors[index]} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
+    <Card>
+      <CardHeader>
+        <h3 className="text-sm font-semibold">Form Submission Funnel</h3>
+      </CardHeader>
+      <CardBody>
+        <div className="mb-2 grid grid-cols-6 gap-2">
+          {data.map((item) => (
+            <div key={item.stage} className="text-center">
+              <div className="text-xs text-slate-500 dark:text-slate-400">{((item.value / top) * 100).toFixed(1)}%</div>
+              <div className="text-lg font-mono text-slate-900 dark:text-slate-100">{item.value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="h-[280px] w-full">
+          <ResponsiveContainer>
+            <BarChart data={data} margin={{ top: 8, right: 8, left: -12, bottom: 12 }}>
+              <CartesianGrid stroke="#e8eef7" vertical={false} />
+              <XAxis dataKey="stage" tick={{ fill: "#566b82", fontSize: 12 }} interval={0} />
+              <YAxis tick={{ fill: "#566b82", fontSize: 12 }} />
+              <Tooltip formatter={(value: number) => [value.toLocaleString(), "Count"]} />
+              <Bar dataKey="value" radius={[8, 8, 0, 0]}>
+                {data.map((entry, index) => (
+                  <Cell key={entry.stage} fill={colors[index]} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </CardBody>
+    </Card>
   );
 }

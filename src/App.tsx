@@ -59,14 +59,14 @@ function App(): JSX.Element {
   };
 
   if (authLoading) {
-    return <div className="min-h-screen bg-slate-50" />;
+    return <div className="min-h-screen bg-slate-50 dark:bg-slate-900" />;
   }
 
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-slate-50">
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors">
         {authUser ? <Navbar user={authUser} onLogout={handleLogout} /> : null}
-        <Suspense fallback={<div className="min-h-screen bg-slate-50" />}>
+        <Suspense fallback={<div className="min-h-screen bg-slate-50 dark:bg-slate-900" />}>
           <Routes>
             <Route path="/login" element={authUser ? <Navigate to="/projects" replace /> : <LoginPage onLogin={handleLogin} />} />
             <Route path="/verify-email" element={<VerifyEmailPage />} />
