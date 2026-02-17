@@ -31,3 +31,10 @@ export interface AuthSignupResponse {
   verificationEmailSent: boolean;
   verificationUrl?: string;
 }
+
+export interface AuthResendVerificationResponse {
+  ok: true;
+  message: string;
+  verificationEmailSent: boolean;
+  verificationUrl?: string;
+}

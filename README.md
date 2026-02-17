@@ -96,6 +96,7 @@ Auth:
 
 - `POST /api/auth/signup`
 - `POST /api/auth/verify-email`
+- `POST /api/auth/resend-verification`
 - `POST /api/auth/login`
 - `GET /api/auth/me`
 - `POST /api/auth/logout`

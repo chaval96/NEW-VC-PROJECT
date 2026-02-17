@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
-import { signup } from "../api";
+import { resendVerification, signup } from "../api";
 import { Button } from "../components/ui/Button";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
@@ -19,6 +19,7 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
   const [verificationUrl, setVerificationUrl] = useState<string>();
+  const [resending, setResending] = useState(false);
 
   const handleLogin = async (): Promise<void> => {
     await onLogin(email.trim(), password);
@@ -35,7 +36,11 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
       password
     });
 
-    setSuccess(response.message);
+    const signupMessage = response.verificationEmailSent || response.verificationUrl
+      ? response.message
+      : "Account created, but verification email could not be delivered right now. Use resend or contact support.";
+
+    setSuccess(signupMessage);
     setVerificationUrl(response.verificationUrl);
   };
 
@@ -56,6 +61,28 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
       setError(err instanceof Error ? err.message : mode === "login" ? "Login failed" : "Signup failed");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleResendVerification = async (): Promise<void> => {
+    if (email.trim().length === 0) {
+      setError("Please enter your email first");
+      return;
+    }
+
+    setResending(true);
+    setError(undefined);
+    setSuccess(undefined);
+    setVerificationUrl(undefined);
+
+    try {
+      const response = await resendVerification(email.trim());
+      setSuccess(response.message);
+      setVerificationUrl(response.verificationUrl);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not resend verification email");
+    } finally {
+      setResending(false);
     }
   };
 
@@ -154,6 +181,15 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
                 Need to verify your email first? Check your inbox and open the verification link. You can also open it manually via the
                 dev link shown after signup.
               </p>
+
+              <button
+                type="button"
+                onClick={() => void handleResendVerification()}
+                disabled={resending || email.trim().length === 0}
+                className="text-xs font-medium text-primary-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400"
+              >
+                {resending ? "Sending verification..." : "Resend verification email"}
+              </button>
 
               <div className="text-xs text-slate-400">
                 Already have a token link? <Link className="text-primary-700 hover:underline" to="/verify-email">Open verify page</Link>

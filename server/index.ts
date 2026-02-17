@@ -160,6 +160,32 @@ app.post(
   })
 );
 
+const resendVerificationSchema = z.object({ email: z.string().email() });
+app.post(
+  "/api/auth/resend-verification",
+  asyncHandler(async (req, res) => {
+    const parsed = resendVerificationSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const result = await authService.resendVerificationEmail(parsed.data.email);
+    const message = result.alreadyVerified
+      ? "This email is already verified. Please sign in."
+      : result.verificationEmailSent
+        ? "If your account exists and is not verified, a new verification email has been sent."
+        : "If your account exists and is not verified, we could not deliver the verification email right now. Please try again later.";
+
+    res.json({
+      ok: true,
+      message,
+      verificationEmailSent: result.verificationEmailSent,
+      verificationUrl: result.verificationUrl
+    });
+  })
+);
+
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8)
@@ -187,7 +213,13 @@ app.use(
       return;
     }
 
-    if (req.path === "/health" || req.path === "/auth/signup" || req.path === "/auth/verify-email" || req.path === "/auth/login") {
+    if (
+      req.path === "/health" ||
+      req.path === "/auth/signup" ||
+      req.path === "/auth/verify-email" ||
+      req.path === "/auth/resend-verification" ||
+      req.path === "/auth/login"
+    ) {
       next();
       return;
     }

@@ -27,6 +27,13 @@ interface SignupResult {
   verificationUrl?: string;
 }
 
+interface ResendVerificationResult {
+  email: string;
+  verificationEmailSent: boolean;
+  verificationUrl?: string;
+  alreadyVerified: boolean;
+}
+
 class AuthError extends Error {
   status: number;
 
@@ -285,6 +292,66 @@ export class AuthService {
 
     user.email_verified_at = new Date().toISOString();
     return toAuthUser(user);
+  }
+
+  async resendVerificationEmail(emailInput: string): Promise<ResendVerificationResult> {
+    const email = normalizeEmail(emailInput);
+
+    if (this.pool) {
+      const result = await this.pool.query<AuthUserRecord>(
+        `SELECT id, email, password_hash, name, role, email_verified_at FROM users WHERE email = $1 LIMIT 1`,
+        [email]
+      );
+      const row = result.rows[0];
+      if (!row) {
+        return { email, verificationEmailSent: false, alreadyVerified: false };
+      }
+
+      if (row.email_verified_at) {
+        return { email, verificationEmailSent: false, alreadyVerified: true };
+      }
+
+      const verifyToken = randomBytes(32).toString("hex");
+      await this.pool.query(
+        `INSERT INTO email_verification_tokens (id, user_id, token_hash, expires_at)
+         VALUES ($1, $2, $3, NOW() + INTERVAL '${VERIFICATION_TTL_HOURS} hours')`,
+        [uuid(), row.id, tokenHash(verifyToken)]
+      );
+
+      const url = this.buildVerificationUrl(verifyToken);
+      const sent = await this.sendVerificationEmail(row.email, row.name, url);
+      await this.writeAudit({ userId: row.id, action: "auth.verification_resent", entityType: "user", entityId: row.id });
+
+      return {
+        email,
+        verificationEmailSent: sent,
+        verificationUrl: process.env.NODE_ENV === "production" ? undefined : url,
+        alreadyVerified: false
+      };
+    }
+
+    const row = this.memoryUsers.get(email);
+    if (!row) {
+      return { email, verificationEmailSent: false, alreadyVerified: false };
+    }
+    if (row.email_verified_at) {
+      return { email, verificationEmailSent: false, alreadyVerified: true };
+    }
+
+    const verifyToken = randomBytes(32).toString("hex");
+    this.memoryVerificationTokens.set(tokenHash(verifyToken), {
+      userId: row.id,
+      expiresAt: Date.now() + VERIFICATION_TTL_HOURS * 60 * 60 * 1000,
+      used: false
+    });
+
+    const url = this.buildVerificationUrl(verifyToken);
+    return {
+      email,
+      verificationEmailSent: false,
+      verificationUrl: url,
+      alreadyVerified: false
+    };
   }
 
   async login(emailInput: string, password: string): Promise<{ token: string; user: AuthUser }> {

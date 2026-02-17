@@ -1,5 +1,6 @@
 import type {
   AuthLoginResponse,
+  AuthResendVerificationResponse,
   AuthSignupResponse,
   AuthUser,
   CampaignRun,
@@ -72,6 +73,13 @@ export function verifyEmail(token: string): Promise<{ ok: true; user: AuthUser }
   return api<{ ok: true; user: AuthUser }>("/api/auth/verify-email", {
     method: "POST",
     body: JSON.stringify({ token })
+  });
+}
+
+export function resendVerification(email: string): Promise<AuthResendVerificationResponse> {
+  return api<AuthResendVerificationResponse>("/api/auth/resend-verification", {
+    method: "POST",
+    body: JSON.stringify({ email })
   });
 }
 
