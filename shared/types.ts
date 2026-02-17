@@ -25,6 +25,7 @@ export type SubmissionStatus =
 
 export type SubmissionRequestStatus =
   | "pending_approval"
+  | "pending_retry"
   | "approved"
   | "rejected"
   | "executing"
@@ -104,6 +105,12 @@ export interface SubmissionRequest {
   approvedBy?: string;
   approvedAt?: string;
   executedAt?: string;
+  executionAttempts?: number;
+  maxExecutionAttempts?: number;
+  lastExecutionStartedAt?: string;
+  lastExecutionEndedAt?: string;
+  lastExecutionStatus?: SubmissionStatus;
+  nextRetryAt?: string;
   resultNote?: string;
 }
 
@@ -297,6 +304,7 @@ export interface OverviewResponse {
   recentActivities: SubmissionEvent[];
   activeRuns: CampaignRun[];
   pendingApprovals: number;
+  ops: OpsSnapshot;
   creditBalance: CreditBalance;
 }
 
@@ -304,6 +312,24 @@ export interface RunDetail {
   run: CampaignRun;
   tasks: AgentTaskResult[];
   logs: RunLog[];
+}
+
+export interface OpsAlert {
+  id: string;
+  severity: "warning" | "critical";
+  source: "run" | "submission";
+  createdAt: string;
+  message: string;
+  entityId: string;
+}
+
+export interface OpsSnapshot {
+  staleRuns: number;
+  staleExecutions: number;
+  pendingRetries: number;
+  failedExecutions24h: number;
+  failedTasks24h: number;
+  alerts: OpsAlert[];
 }
 
 export interface Playbook {

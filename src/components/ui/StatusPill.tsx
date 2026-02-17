@@ -18,6 +18,7 @@ const pillMap: Record<string, string> = {
   blocked: "pill-red",
   errored: "pill-red",
   pending_approval: "pill-blue",
+  pending_retry: "pill-amber",
   approved: "pill-green",
   rejected: "pill-amber",
   executing: "pill-blue",

@@ -82,6 +82,17 @@ Optional (browser automation):
 - `PLAYWRIGHT_ENABLED=true`
 - `PLAYWRIGHT_SUBMIT_ENABLED=true`
 
+Optional reliability controls (cheap defaults already enabled):
+
+- `AGENT_TASK_MAX_ATTEMPTS=2`
+- `SUBMISSION_MAX_ATTEMPTS=2`
+- `SUBMISSION_RETRY_DELAY_MS=1500`
+- `SUBMISSION_WATCHDOG_INTERVAL_SECONDS=45`
+- `SUBMISSION_EXECUTION_STALE_MINUTES=10`
+- `OPS_STALE_RUN_MINUTES=20`
+- `OPS_STALE_EXECUTION_MINUTES=10`
+- `OPS_ALERT_WINDOW_HOURS=24`
+
 Optional feature flags (disabled by default for lower cost):
 
 - `FEATURE_CREDITS=true`

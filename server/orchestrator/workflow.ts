@@ -27,6 +27,8 @@ type RunRequest = {
 export class CampaignOrchestrator {
   constructor(private readonly store: StateStore) {}
 
+  private readonly taskMaxAttempts = Math.max(1, Number(process.env.AGENT_TASK_MAX_ATTEMPTS ?? 2));
+
   async createRun(request: RunRequest): Promise<CampaignRun> {
     const workspace = this.resolveWorkspace(request.workspaceId);
     const firms = this.resolveFirms(workspace.id, request.firmIds);
@@ -49,7 +51,20 @@ export class CampaignOrchestrator {
     await this.store.persist();
 
     for (const firm of firms) {
-      await this.processFirm(workspace, run.id, firm, request.mode);
+      try {
+        await this.processFirm(workspace, run.id, firm, request.mode);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown task execution error";
+        this.addLog(workspace.id, run.id, "error", `Firm ${firm.name} failed: ${message}`, firm.id);
+        this.updateFirm(firm, {
+          stage: "review",
+          statusReason: `Execution failed: ${message}`,
+          lastTouchedAt: new Date().toISOString(),
+          notes: [...firm.notes, `Run ${run.id}: execution error ${message}`]
+        });
+        this.bumpRunCounter(workspace.id, run.id, false);
+        await this.store.persist();
+      }
     }
 
     const finalRun = this.store.updateRun(run.id, workspace.id, (current) => ({
@@ -198,7 +213,9 @@ export class CampaignOrchestrator {
       },
       formUrlCandidate,
       status: "pending_approval",
-      mode
+      mode,
+      executionAttempts: 0,
+      maxExecutionAttempts: Math.max(1, Number(process.env.SUBMISSION_MAX_ATTEMPTS ?? 2))
     };
   }
 
@@ -232,28 +249,81 @@ export class CampaignOrchestrator {
     agentName: string,
     executor: () => Promise<{ confidence: number; summary: string; output: Record<string, unknown> }>
   ): Promise<AgentTaskResult> {
-    const startedAt = new Date().toISOString();
-    const result = await executor();
+    let attempt = 0;
+    let lastError: string | undefined;
 
-    const task: AgentTaskResult = {
+    while (attempt < this.taskMaxAttempts) {
+      attempt += 1;
+      const startedAt = new Date().toISOString();
+      try {
+        const result = await executor();
+
+        const task: AgentTaskResult = {
+          id: uuid(),
+          workspaceId,
+          runId,
+          firmId: firm.id,
+          firmName: firm.name,
+          agent: agentName,
+          status: "completed",
+          startedAt,
+          endedAt: new Date().toISOString(),
+          confidence: result.confidence,
+          summary: result.summary,
+          output: {
+            ...result.output,
+            attempt
+          }
+        };
+
+        this.store.addTask(task);
+        this.attachTaskToRun(workspaceId, runId, task.id);
+        this.addLog(workspaceId, runId, "info", `${agentName}: ${result.summary}`, firm.id);
+        return task;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : "Unknown task error";
+        if (attempt < this.taskMaxAttempts) {
+          this.addLog(
+            workspaceId,
+            runId,
+            "warn",
+            `${agentName} attempt ${attempt}/${this.taskMaxAttempts} failed for ${firm.name}: ${lastError}. Retrying...`,
+            firm.id
+          );
+          await new Promise((resolve) => setTimeout(resolve, Math.min(1200, 300 * attempt)));
+          continue;
+        }
+      }
+    }
+
+    const failedTask: AgentTaskResult = {
       id: uuid(),
       workspaceId,
       runId,
       firmId: firm.id,
       firmName: firm.name,
       agent: agentName,
-      status: "completed",
-      startedAt,
+      status: "failed",
+      startedAt: new Date().toISOString(),
       endedAt: new Date().toISOString(),
-      confidence: result.confidence,
-      summary: result.summary,
-      output: result.output
+      confidence: 0,
+      summary: `${agentName} failed after ${this.taskMaxAttempts} attempts`,
+      output: {
+        error: lastError ?? "Unknown task error",
+        attempts: this.taskMaxAttempts
+      }
     };
 
-    this.store.addTask(task);
-    this.attachTaskToRun(workspaceId, runId, task.id);
-    this.addLog(workspaceId, runId, "info", `${agentName}: ${result.summary}`, firm.id);
-    return task;
+    this.store.addTask(failedTask);
+    this.attachTaskToRun(workspaceId, runId, failedTask.id);
+    this.addLog(
+      workspaceId,
+      runId,
+      "error",
+      `${agentName} failed for ${firm.name} after ${this.taskMaxAttempts} attempts: ${lastError ?? "Unknown task error"}`,
+      firm.id
+    );
+    throw new Error(`${agentName} failed after retries`);
   }
 
   private updateFirm(firm: Firm, patch: Partial<Firm>): void {

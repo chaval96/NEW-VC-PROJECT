@@ -1,5 +1,16 @@
 import dayjs from "dayjs";
-import type { CampaignRun, OverviewResponse, PipelineStage, SubmissionEvent, SubmissionRequest, Workspace, Firm } from "../domain/types.js";
+import type {
+  AgentTaskResult,
+  CampaignRun,
+  Firm,
+  OpsAlert,
+  OverviewResponse,
+  PipelineStage,
+  RunLog,
+  SubmissionEvent,
+  SubmissionRequest,
+  Workspace
+} from "../domain/types.js";
 
 const stageOrder: PipelineStage[] = [
   "lead",
@@ -22,8 +33,15 @@ export function buildOverview(
   firms: Firm[],
   events: SubmissionEvent[],
   runs: CampaignRun[],
-  requests: SubmissionRequest[]
+  requests: SubmissionRequest[],
+  tasks: AgentTaskResult[],
+  logs: RunLog[]
 ): Omit<OverviewResponse, "creditBalance"> {
+  const staleRunMinutes = Math.max(5, Number(process.env.OPS_STALE_RUN_MINUTES ?? 20));
+  const staleExecutionMinutes = Math.max(2, Number(process.env.OPS_STALE_EXECUTION_MINUTES ?? 10));
+  const alertWindowHours = Math.max(1, Number(process.env.OPS_ALERT_WINDOW_HOURS ?? 24));
+  const now = dayjs();
+
   const attempts = events.length;
   const formsDiscovered = countByPredicate(events, (event) => ["form_discovered", "form_filled", "submitted"].includes(event.status));
   const formsFilled = countByPredicate(events, (event) => ["form_filled", "submitted"].includes(event.status));
@@ -70,6 +88,59 @@ export function buildOverview(
   const activeRuns = runs.filter((run) => run.status === "running");
   const pendingApprovals = requests.filter((request) => request.status === "pending_approval").length;
 
+  const staleRuns = runs.filter((run) => run.status === "running" && now.diff(dayjs(run.startedAt), "minute") >= staleRunMinutes);
+  const staleExecutions = requests.filter((request) => {
+    if (request.status !== "executing") return false;
+    const startedAt = request.lastExecutionStartedAt ?? request.approvedAt ?? request.preparedAt;
+    return now.diff(dayjs(startedAt), "minute") >= staleExecutionMinutes;
+  });
+  const pendingRetries = requests.filter((request) => request.status === "pending_retry");
+
+  const failedExecutions24h = requests.filter(
+    (request) => request.status === "failed" && request.executedAt && now.diff(dayjs(request.executedAt), "hour") <= alertWindowHours
+  );
+  const failedTasks24h = tasks.filter(
+    (task) => task.status === "failed" && now.diff(dayjs(task.endedAt ?? task.startedAt), "hour") <= alertWindowHours
+  );
+  const errorLogs24h = logs.filter((log) => log.level === "error" && now.diff(dayjs(log.timestamp), "hour") <= alertWindowHours);
+
+  const alerts: OpsAlert[] = [
+    ...staleRuns.map((run) => ({
+      id: `stale-run-${run.id}`,
+      severity: "critical" as const,
+      source: "run" as const,
+      createdAt: run.startedAt,
+      message: `Run ${run.id.slice(0, 8)} has been running for over ${staleRunMinutes} minutes.`,
+      entityId: run.id
+    })),
+    ...staleExecutions.map((request) => ({
+      id: `stale-execution-${request.id}`,
+      severity: "critical" as const,
+      source: "submission" as const,
+      createdAt: request.lastExecutionStartedAt ?? request.approvedAt ?? request.preparedAt,
+      message: `${request.firmName} execution is stuck for over ${staleExecutionMinutes} minutes.`,
+      entityId: request.id
+    })),
+    ...failedExecutions24h.slice(0, 6).map((request) => ({
+      id: `failed-submission-${request.id}`,
+      severity: "warning" as const,
+      source: "submission" as const,
+      createdAt: request.executedAt ?? request.preparedAt,
+      message: `${request.firmName} submission failed: ${request.resultNote ?? "No reason provided"}`,
+      entityId: request.id
+    })),
+    ...failedTasks24h.slice(0, 6).map((task) => ({
+      id: `failed-task-${task.id}`,
+      severity: "warning" as const,
+      source: "run" as const,
+      createdAt: task.endedAt ?? task.startedAt,
+      message: `${task.agent} failed for ${task.firmName}: ${task.summary}`,
+      entityId: task.id
+    }))
+  ]
+    .sort((a, b) => (a.createdAt > b.createdAt ? -1 : 1))
+    .slice(0, 12);
+
   return {
     workspace: {
       id: workspace.id,
@@ -89,6 +160,14 @@ export function buildOverview(
     weeklyTrend,
     recentActivities: events.slice(0, 20),
     activeRuns,
-    pendingApprovals
+    pendingApprovals,
+    ops: {
+      staleRuns: staleRuns.length,
+      staleExecutions: staleExecutions.length,
+      pendingRetries: pendingRetries.length,
+      failedExecutions24h: failedExecutions24h.length,
+      failedTasks24h: failedTasks24h.length + errorLogs24h.length,
+      alerts
+    }
   };
 }

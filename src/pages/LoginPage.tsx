@@ -9,6 +9,31 @@ interface LoginPageProps {
   onLogin: (email: string, password: string) => Promise<void>;
 }
 
+const blockedEmailDomains = new Set([
+  "example.com",
+  "example.org",
+  "example.net",
+  "test.com",
+  "invalid",
+  "mailinator.com",
+  "yopmail.com",
+  "tempmail.com",
+  "temp-mail.org",
+  "guerrillamail.com",
+  "10minutemail.com"
+]);
+
+const strictEmailPattern = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
+
+function isAllowedAuthEmail(value: string): boolean {
+  const email = value.trim().toLowerCase();
+  if (!strictEmailPattern.test(email)) return false;
+
+  const domain = email.split("@")[1];
+  if (!domain) return false;
+  return !blockedEmailDomains.has(domain);
+}
+
 export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [name, setName] = useState("");
@@ -26,6 +51,10 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
   };
 
   const handleSignup = async (): Promise<void> => {
+    if (!isAllowedAuthEmail(email)) {
+      throw new Error("Email is invalid. Please enter a valid email address.");
+    }
+
     if (password !== confirmPassword) {
       throw new Error("Passwords do not match");
     }
@@ -37,8 +66,8 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
     });
 
     const signupMessage = response.verificationEmailSent || response.verificationUrl
-      ? response.message
-      : "Account created, but verification email could not be delivered right now. Use resend or contact support.";
+      ? "Verification email sent. Please check your inbox (and spam folder)."
+      : "Account created. Please use 'Resend verification email' if you do not receive the message.";
 
     setSuccess(signupMessage);
     setVerificationUrl(response.verificationUrl);
@@ -67,6 +96,10 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
   const handleResendVerification = async (): Promise<void> => {
     if (email.trim().length === 0) {
       setError("Please enter your email first");
+      return;
+    }
+    if (!isAllowedAuthEmail(email)) {
+      setError("Email is invalid. Please enter a valid email address.");
       return;
     }
 
@@ -178,8 +211,7 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
               </Button>
 
               <p className="text-xs text-slate-400">
-                Need to verify your email first? Check your inbox and open the verification link. You can also open it manually via the
-                dev link shown after signup.
+                Need to verify your email first? Check your inbox and spam folder, then open the verification link.
               </p>
 
               <button

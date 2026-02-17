@@ -194,6 +194,7 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
   const completedImports = useMemo(() => imports.filter((entry) => entry.status === "completed"), [imports]);
   const failedImports = useMemo(() => imports.filter((entry) => entry.status === "failed"), [imports]);
   const pendingQueue = useMemo(() => queue.filter((item) => item.status === "pending_approval"), [queue]);
+  const retryQueue = useMemo(() => queue.filter((item) => item.status === "pending_retry"), [queue]);
 
   const onStartProcessing = async (): Promise<void> => {
     if (!workspaceId) return;
@@ -259,6 +260,37 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
         <KpiCard label="Submitted" value={overview.kpis.submitted} subtitle="Completed" />
         <KpiCard label="Success Rate" value={`${overview.kpis.completionRate}%`} subtitle="Submitted / attempts" />
       </div>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <h3 className="text-sm font-semibold">Execution Reliability</h3>
+        </CardHeader>
+        <CardBody>
+          <div className="mb-4 grid grid-cols-2 gap-4 md:grid-cols-5">
+            <KpiCard label="Stale Runs" value={overview.ops.staleRuns} subtitle="Need operator check" />
+            <KpiCard label="Stuck Execs" value={overview.ops.staleExecutions} subtitle="Auto-recovery target" />
+            <KpiCard label="Pending Retries" value={overview.ops.pendingRetries} subtitle="Watchdog queue" />
+            <KpiCard label="Failed Exec (24h)" value={overview.ops.failedExecutions24h} subtitle="Submission failures" />
+            <KpiCard label="Failed Tasks (24h)" value={overview.ops.failedTasks24h} subtitle="Agent-level failures" />
+          </div>
+          <div className="space-y-2">
+            {overview.ops.alerts.length === 0 ? (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                No active reliability alerts.
+              </div>
+            ) : (
+              overview.ops.alerts.slice(0, 8).map((alert) => (
+                <div
+                  key={alert.id}
+                  className={`rounded-lg border px-3 py-2 text-xs ${alert.severity === "critical" ? "border-red-200 bg-red-50 text-red-700" : "border-amber-200 bg-amber-50 text-amber-800"}`}
+                >
+                  <span className="font-semibold uppercase">{alert.severity}</span> - {alert.message}
+                </div>
+              ))
+            )}
+          </div>
+        </CardBody>
+      </Card>
 
       <Card className="mb-6">
         <CardHeader>
@@ -329,7 +361,9 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
 
       <Card className="mb-6">
         <CardHeader>
-          <h3 className="text-sm font-semibold">Pending Approvals ({pendingQueue.length})</h3>
+          <h3 className="text-sm font-semibold">
+            Pending Approvals ({pendingQueue.length}) {retryQueue.length > 0 ? `• Auto-Retry Queue (${retryQueue.length})` : ""}
+          </h3>
         </CardHeader>
         <CardBody className="p-0">
           <div className="overflow-auto">

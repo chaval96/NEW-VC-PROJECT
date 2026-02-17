@@ -11,7 +11,7 @@ import { buildOverview } from "./services/analytics.js";
 import { AuthService, type AuthUser } from "./services/auth-service.js";
 import { CreditService } from "./services/credit-service.js";
 import { parseFirmsFromGoogleDriveLink, parseFirmsFromUpload } from "./services/import-parser.js";
-import { executeSubmissionRequest } from "./services/submission-executor.js";
+import { executeSubmissionRequest, type SubmissionExecutionResult } from "./services/submission-executor.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -110,6 +110,263 @@ function validateProfileReadiness(profile: CompanyProfile): string[] {
   return missing;
 }
 
+const blockedEmailDomains = new Set([
+  "example.com",
+  "example.org",
+  "example.net",
+  "test.com",
+  "invalid",
+  "mailinator.com",
+  "yopmail.com",
+  "tempmail.com",
+  "temp-mail.org",
+  "guerrillamail.com",
+  "10minutemail.com"
+]);
+
+const strictEmailPattern = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
+
+function isAllowedAuthEmail(value: string): boolean {
+  const email = value.trim().toLowerCase();
+  if (!strictEmailPattern.test(email)) return false;
+
+  const domain = email.split("@")[1];
+  if (!domain) return false;
+  if (blockedEmailDomains.has(domain)) return false;
+  return true;
+}
+
+const authEmailSchema = z.string().email().refine(isAllowedAuthEmail, {
+  message: "Please enter a valid email address."
+});
+
+const submissionMaxAttemptsDefault = Math.max(1, Number(process.env.SUBMISSION_MAX_ATTEMPTS ?? 2));
+const submissionRetryDelayMs = Math.max(300, Number(process.env.SUBMISSION_RETRY_DELAY_MS ?? 1500));
+const submissionStaleExecutionMs = Math.max(60_000, Number(process.env.SUBMISSION_EXECUTION_STALE_MINUTES ?? 10) * 60_000);
+const submissionWatchdogIntervalMs = Math.max(15_000, Number(process.env.SUBMISSION_WATCHDOG_INTERVAL_SECONDS ?? 45) * 1000);
+const submissionInFlight = new Set<string>();
+let submissionWatchdogActive = false;
+
+function submissionFlightKey(workspaceId: string, requestId: string): string {
+  return `${workspaceId}:${requestId}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isSubmissionSuccess(status: SubmissionStatus): boolean {
+  return status === "submitted" || status === "form_filled";
+}
+
+function updateFirmFromExecution(
+  workspaceId: string,
+  requestId: string,
+  request: { firmId: string; firmName: string },
+  result: SubmissionExecutionResult
+): void {
+  const firm = store.getFirm(request.firmId, workspaceId);
+  if (!firm) return;
+  store.upsertFirm({
+    ...firm,
+    stage: statusToStage(result.status),
+    statusReason: result.note,
+    lastTouchedAt: new Date().toISOString(),
+    notes: [...firm.notes, `Execution ${requestId}: ${result.status}`]
+  });
+}
+
+async function executeSubmissionWithRetries(
+  workspaceId: string,
+  requestId: string
+): Promise<{ request?: ReturnType<StateStore["getSubmissionRequest"]>; result: SubmissionExecutionResult }> {
+  const initial = store.getSubmissionRequest(requestId, workspaceId);
+  if (!initial) {
+    throw new Error("Submission request not found");
+  }
+
+  const maxAttempts = Math.max(1, initial.maxExecutionAttempts ?? submissionMaxAttemptsDefault);
+  let attempts = Math.max(0, initial.executionAttempts ?? 0);
+  let lastResult: SubmissionExecutionResult | null = null;
+
+  while (attempts < maxAttempts) {
+    attempts += 1;
+    const startedAt = new Date().toISOString();
+
+    const executing = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
+      ...current,
+      status: "executing",
+      executionAttempts: attempts,
+      maxExecutionAttempts: maxAttempts,
+      lastExecutionStartedAt: startedAt,
+      nextRetryAt: undefined
+    }));
+
+    if (!executing) {
+      throw new Error("Submission request not found");
+    }
+
+    await store.persist();
+
+    const result = await executeSubmissionRequest(executing);
+    lastResult = result;
+    const endedAt = new Date().toISOString();
+
+    store.addEvent({
+      id: uuid(),
+      workspaceId,
+      firmId: executing.firmId,
+      firmName: executing.firmName,
+      channel: "website_form",
+      status: result.status,
+      attemptedAt: endedAt,
+      discoveredAt: result.discoveredAt,
+      filledAt: result.filledAt,
+      submittedAt: result.submittedAt,
+      blockedReason: result.blockedReason,
+      note: `Attempt ${attempts}/${maxAttempts}: ${result.note}`
+    });
+
+    if (isSubmissionSuccess(result.status)) {
+      const completed = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
+        ...current,
+        status: "completed",
+        executedAt: endedAt,
+        executionAttempts: attempts,
+        maxExecutionAttempts: maxAttempts,
+        lastExecutionEndedAt: endedAt,
+        lastExecutionStatus: result.status,
+        resultNote: result.note,
+        nextRetryAt: undefined
+      }));
+      if (completed) {
+        updateFirmFromExecution(workspaceId, requestId, completed, result);
+      }
+      await store.persist();
+      return { request: completed, result };
+    }
+
+    const shouldRetry = result.status === "errored" && attempts < maxAttempts;
+    if (shouldRetry) {
+      const nextRetryAt = new Date(Date.now() + submissionRetryDelayMs).toISOString();
+      store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
+        ...current,
+        status: "pending_retry",
+        executionAttempts: attempts,
+        maxExecutionAttempts: maxAttempts,
+        lastExecutionEndedAt: endedAt,
+        lastExecutionStatus: result.status,
+        resultNote: `${result.note} Auto-retrying soon (${attempts}/${maxAttempts}).`,
+        nextRetryAt
+      }));
+      await store.persist();
+      await sleep(submissionRetryDelayMs);
+      continue;
+    }
+
+    const failed = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
+      ...current,
+      status: "failed",
+      executedAt: endedAt,
+      executionAttempts: attempts,
+      maxExecutionAttempts: maxAttempts,
+      lastExecutionEndedAt: endedAt,
+      lastExecutionStatus: result.status,
+      resultNote: result.note,
+      nextRetryAt: undefined
+    }));
+    if (failed) {
+      updateFirmFromExecution(workspaceId, requestId, failed, result);
+    }
+    await store.persist();
+    return { request: failed, result };
+  }
+
+  const fallbackResult: SubmissionExecutionResult = lastResult ?? {
+    status: "errored",
+    note: "Submission exhausted retry budget without a successful result."
+  };
+  return { request: store.getSubmissionRequest(requestId, workspaceId), result: fallbackResult };
+}
+
+async function runSubmissionExecution(workspaceId: string, requestId: string): Promise<{
+  request?: ReturnType<StateStore["getSubmissionRequest"]>;
+  result: SubmissionExecutionResult;
+}> {
+  const key = submissionFlightKey(workspaceId, requestId);
+  if (submissionInFlight.has(key)) {
+    throw new Error("Submission is already being executed");
+  }
+
+  submissionInFlight.add(key);
+  try {
+    return await executeSubmissionWithRetries(workspaceId, requestId);
+  } finally {
+    submissionInFlight.delete(key);
+  }
+}
+
+async function runSubmissionWatchdog(): Promise<void> {
+  if (submissionWatchdogActive) return;
+  submissionWatchdogActive = true;
+
+  try {
+    const now = Date.now();
+    const workspaces = store.listWorkspaces();
+
+    for (const workspace of workspaces) {
+      const requests = store.listSubmissionRequests(workspace.id);
+
+      for (const request of requests) {
+        const key = submissionFlightKey(workspace.id, request.id);
+        if (submissionInFlight.has(key)) continue;
+
+        if (request.status === "executing") {
+          const startedAt = Date.parse(request.lastExecutionStartedAt ?? request.approvedAt ?? request.preparedAt);
+          if (Number.isFinite(startedAt) && now - startedAt >= submissionStaleExecutionMs) {
+            const attempts = request.executionAttempts ?? 0;
+            const maxAttempts = Math.max(1, request.maxExecutionAttempts ?? submissionMaxAttemptsDefault);
+            const canRetry = attempts < maxAttempts;
+            store.updateSubmissionRequest(workspace.id, request.id, (current) => ({
+              ...current,
+              status: canRetry ? "pending_retry" : "failed",
+              lastExecutionEndedAt: new Date().toISOString(),
+              resultNote: canRetry
+                ? `Execution timed out. Watchdog scheduled auto-retry (${attempts}/${maxAttempts}).`
+                : "Execution timed out and retry budget is exhausted.",
+              nextRetryAt: canRetry ? new Date().toISOString() : undefined,
+              executedAt: canRetry ? current.executedAt : new Date().toISOString()
+            }));
+          }
+        }
+      }
+
+      await store.persist();
+
+      const dueRetries = store
+        .listSubmissionRequests(workspace.id)
+        .filter(
+          (request) =>
+            request.status === "pending_retry" &&
+            (!request.nextRetryAt || Date.parse(request.nextRetryAt) <= Date.now())
+        )
+        .slice(0, 6);
+
+      for (const request of dueRetries) {
+        const key = submissionFlightKey(workspace.id, request.id);
+        if (submissionInFlight.has(key)) continue;
+        try {
+          await runSubmissionExecution(workspace.id, request.id);
+        } catch (error) {
+          console.error(`Watchdog submission execution failed for ${request.id}:`, error instanceof Error ? error.message : error);
+        }
+      }
+    }
+  } finally {
+    submissionWatchdogActive = false;
+  }
+}
+
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",").map((value) => value.trim()) : true
@@ -123,7 +380,7 @@ app.get("/api/health", (_req, res) => {
 
 const signupSchema = z.object({
   name: z.string().min(2),
-  email: z.string().email(),
+  email: authEmailSchema,
   password: z.string().min(8)
 });
 
@@ -160,7 +417,7 @@ app.post(
   })
 );
 
-const resendVerificationSchema = z.object({ email: z.string().email() });
+const resendVerificationSchema = z.object({ email: authEmailSchema });
 app.post(
   "/api/auth/resend-verification",
   asyncHandler(async (req, res) => {
@@ -187,7 +444,7 @@ app.post(
 );
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  email: authEmailSchema,
   password: z.string().min(8)
 });
 
@@ -401,7 +658,9 @@ app.get(
       store.listFirms(workspaceId),
       store.listEvents(workspaceId),
       store.listRuns(workspaceId),
-      store.listSubmissionRequests(workspaceId)
+      store.listSubmissionRequests(workspaceId),
+      store.listTasks(workspaceId),
+      store.listLogs(workspaceId)
     );
 
     res.json({ ...overview, creditBalance: creditService.getBalance(workspaceId) });
@@ -582,6 +841,16 @@ app.post(
     }
 
     const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const existing = store.getSubmissionRequest(req.params.id, workspaceId);
+    if (!existing) {
+      res.status(404).json({ message: "Submission request not found" });
+      return;
+    }
+    if (!["pending_approval", "pending_retry", "failed"].includes(existing.status)) {
+      res.status(409).json({ message: `Submission cannot be approved from status '${existing.status}'` });
+      return;
+    }
+
     const approved = store.updateSubmissionRequest(workspaceId, req.params.id, (current) => ({
       ...current,
       status: "approved",
@@ -594,50 +863,8 @@ app.post(
       return;
     }
 
-    const executing = store.updateSubmissionRequest(workspaceId, req.params.id, (current) => ({ ...current, status: "executing" }));
-    if (!executing) {
-      res.status(404).json({ message: "Submission request not found" });
-      return;
-    }
-
-    const result = await executeSubmissionRequest(executing);
-    const finalStatus = result.status === "submitted" || result.status === "form_filled" ? "completed" : "failed";
-
-    const updatedRequest = store.updateSubmissionRequest(workspaceId, req.params.id, (current) => ({
-      ...current,
-      status: finalStatus,
-      executedAt: new Date().toISOString(),
-      resultNote: result.note
-    }));
-
-    const firm = store.getFirm(executing.firmId, workspaceId);
-    if (firm) {
-      store.upsertFirm({
-        ...firm,
-        stage: statusToStage(result.status),
-        statusReason: result.note,
-        lastTouchedAt: new Date().toISOString(),
-        notes: [...firm.notes, `Approval execution ${req.params.id}: ${result.status}`]
-      });
-    }
-
-    store.addEvent({
-      id: uuid(),
-      workspaceId,
-      firmId: executing.firmId,
-      firmName: executing.firmName,
-      channel: "website_form",
-      status: result.status,
-      attemptedAt: new Date().toISOString(),
-      discoveredAt: result.discoveredAt,
-      filledAt: result.filledAt,
-      submittedAt: result.submittedAt,
-      blockedReason: result.blockedReason,
-      note: result.note
-    });
-
-    await store.persist();
-    res.json({ request: updatedRequest, result });
+    const execution = await runSubmissionExecution(workspaceId, req.params.id);
+    res.json(execution);
   })
 );
 
@@ -866,6 +1093,11 @@ async function start(): Promise<void> {
   await authService.init();
 
   await authService.ensureMembershipsForUser(process.env.AUTH_EMAIL ?? "founder@vcops.local", store.listWorkspaces().map((w) => w.id));
+
+  setInterval(() => {
+    void runSubmissionWatchdog();
+  }, submissionWatchdogIntervalMs);
+  void runSubmissionWatchdog();
 
   app.listen(port, () => {
     console.log(`VCReach backend listening on http://localhost:${port}`);

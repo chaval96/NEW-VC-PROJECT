@@ -228,6 +228,10 @@ export class StateStore {
     return this.state.submissionRequests.filter((request) => request.workspaceId === workspaceId);
   }
 
+  getSubmissionRequest(requestId: string, workspaceId = this.state.activeWorkspaceId): SubmissionRequest | undefined {
+    return this.state.submissionRequests.find((request) => request.workspaceId === workspaceId && request.id === requestId);
+  }
+
   updateSubmissionRequest(
     workspaceId: string,
     requestId: string,
@@ -285,12 +289,20 @@ export class StateStore {
     return this.state.tasks.filter((task) => task.workspaceId === workspaceId && task.runId === runId);
   }
 
+  listTasks(workspaceId = this.state.activeWorkspaceId): AgentTaskResult[] {
+    return this.state.tasks.filter((task) => task.workspaceId === workspaceId);
+  }
+
   addLog(log: RunLog): void {
     this.state.logs.push(log);
   }
 
   listLogsByRun(runId: string, workspaceId = this.state.activeWorkspaceId): RunLog[] {
     return this.state.logs.filter((log) => log.workspaceId === workspaceId && log.runId === runId);
+  }
+
+  listLogs(workspaceId = this.state.activeWorkspaceId): RunLog[] {
+    return this.state.logs.filter((log) => log.workspaceId === workspaceId);
   }
 
   addCreditTransaction(txn: CreditTransaction): void {

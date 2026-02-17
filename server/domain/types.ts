@@ -11,6 +11,8 @@ export type {
   Firm,
   FirmContact,
   ImportBatch,
+  OpsAlert,
+  OpsSnapshot,
   InvestorMatch,
   OverviewResponse,
   PipelineStage,
