@@ -7,6 +7,14 @@ import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { StatusPill } from "../components/ui/StatusPill";
 import type { FirmDetail } from "../types";
 
+function displayValue(value?: string): string {
+  const normalized = value?.trim();
+  if (!normalized || normalized.toLowerCase() === "unknown" || normalized === "-") {
+    return "Not specified";
+  }
+  return normalized;
+}
+
 export function LeadDetailPage(): JSX.Element {
   const { workspaceId, firmId } = useParams<{ workspaceId: string; firmId: string }>();
   const navigate = useNavigate();
@@ -52,8 +60,8 @@ export function LeadDetailPage(): JSX.Element {
     <div className="mx-auto max-w-6xl px-6 py-8 animate-fade-in">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">{detail.firm.name}</h1>
-          <p className="mt-1 text-sm text-slate-500">{detail.firm.website}</p>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{detail.firm.name}</h1>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{detail.firm.website}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -84,49 +92,46 @@ export function LeadDetailPage(): JSX.Element {
         </div>
       </div>
 
-      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+      {error ? (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+          {error}
+        </div>
+      ) : null}
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
-        <Card><CardBody><div className="text-xs text-slate-500">Geography</div><div className="mt-1 font-semibold text-slate-800">{detail.firm.geography}</div></CardBody></Card>
-        <Card><CardBody><div className="text-xs text-slate-500">Investor Type</div><div className="mt-1 font-semibold text-slate-800">{detail.firm.investorType}</div></CardBody></Card>
-        <Card><CardBody><div className="text-xs text-slate-500">Check Size</div><div className="mt-1 font-semibold text-slate-800">{detail.firm.checkSizeRange}</div></CardBody></Card>
-        <Card><CardBody><div className="text-xs text-slate-500">Source List</div><div className="mt-1 font-semibold text-slate-800">{detail.firm.sourceListName ?? "-"}</div></CardBody></Card>
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+        <Card><CardBody><div className="text-xs text-slate-500 dark:text-slate-400">Geography</div><div className="mt-1 font-semibold text-slate-800 dark:text-slate-100">{displayValue(detail.firm.geography)}</div></CardBody></Card>
+        <Card><CardBody><div className="text-xs text-slate-500 dark:text-slate-400">Investor Type</div><div className="mt-1 font-semibold text-slate-800 dark:text-slate-100">{displayValue(detail.firm.investorType)}</div></CardBody></Card>
+        <Card><CardBody><div className="text-xs text-slate-500 dark:text-slate-400">Source List</div><div className="mt-1 font-semibold text-slate-800 dark:text-slate-100">{displayValue(detail.firm.sourceListName)}</div></CardBody></Card>
       </div>
 
-      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardBody>
-            <div className="text-xs text-slate-500">Sector Labels</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Focus Areas</div>
             <div className="mt-2 flex flex-wrap gap-1">
-              {detail.firm.focusSectors.map((sector) => (
-                <span key={sector} className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-700">
-                  {sector}
-                </span>
-              ))}
-            </div>
-          </CardBody>
-        </Card>
-        <Card>
-          <CardBody>
-            <div className="text-xs text-slate-500">Round Focus</div>
-            <div className="mt-2 flex flex-wrap gap-1">
-              {detail.firm.stageFocus.map((item) => (
-                <span key={item} className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-700">
-                  {item}
-                </span>
-              ))}
-            </div>
-          </CardBody>
-        </Card>
-        <Card>
-          <CardBody>
-            <div className="text-xs text-slate-500">Investment Focus</div>
-            <div className="mt-2 flex flex-wrap gap-1">
-              {(detail.firm.investmentFocus ?? []).length === 0 ? (
-                <span className="text-xs text-slate-400">Not researched yet</span>
+              {(detail.firm.focusSectors ?? []).filter((item) => item && item.toLowerCase() !== "general").length === 0 ? (
+                <span className="text-xs text-slate-400 dark:text-slate-500">Not specified</span>
               ) : (
-                detail.firm.investmentFocus?.map((item) => (
-                  <span key={item} className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-700">
+                (detail.firm.focusSectors ?? [])
+                  .filter((item) => item && item.toLowerCase() !== "general")
+                  .map((sector) => (
+                    <span key={sector} className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-700 dark:border-slate-600 dark:text-slate-200">
+                      {sector}
+                    </span>
+                  ))
+              )}
+            </div>
+          </CardBody>
+        </Card>
+        <Card>
+          <CardBody>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Round Focus</div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {(detail.firm.stageFocus ?? []).length === 0 ? (
+                <span className="text-xs text-slate-400 dark:text-slate-500">Not specified</span>
+              ) : (
+                detail.firm.stageFocus.map((item) => (
+                  <span key={item} className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-700 dark:border-slate-600 dark:text-slate-200">
                     {item}
                   </span>
                 ))
@@ -136,15 +141,15 @@ export function LeadDetailPage(): JSX.Element {
         </Card>
         <Card>
           <CardBody>
-            <div className="text-xs text-slate-500">Research Score</div>
-            <div className="mt-1 text-lg font-semibold text-slate-800">
-              {detail.firm.qualificationScore != null ? `${Math.round(detail.firm.qualificationScore * 100)}%` : "-"}
+            <div className="text-xs text-slate-500 dark:text-slate-400">Research Score</div>
+            <div className="mt-1 text-lg font-semibold text-slate-800 dark:text-slate-100">
+              {detail.firm.qualificationScore != null ? `${Math.round(detail.firm.qualificationScore * 100)}%` : "Not specified"}
             </div>
-            <div className="mt-1 text-xs text-slate-500">
-              Confidence: {detail.firm.researchConfidence != null ? `${Math.round(detail.firm.researchConfidence * 100)}%` : "-"}
+            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Confidence: {detail.firm.researchConfidence != null ? `${Math.round(detail.firm.researchConfidence * 100)}%` : "Not specified"}
             </div>
-            <div className="mt-1 text-xs text-slate-500">
-              Last research: {detail.firm.researchedAt ? dayjs(detail.firm.researchedAt).format("MMM D, YYYY HH:mm") : "-"}
+            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Last research: {detail.firm.researchedAt ? dayjs(detail.firm.researchedAt).format("MMM D, YYYY HH:mm") : "Not specified"}
             </div>
           </CardBody>
         </Card>
@@ -152,20 +157,12 @@ export function LeadDetailPage(): JSX.Element {
 
       <Card className="mb-6">
         <CardHeader>
-          <h2 className="text-sm font-semibold">Research Summary</h2>
+          <h2 className="text-sm font-semibold">Investor Brief</h2>
         </CardHeader>
         <CardBody>
-          <p className="text-sm text-slate-700">{detail.firm.researchSummary ?? "No research summary yet."}</p>
-          {(detail.firm.researchSources ?? []).length > 0 ? (
-            <div className="mt-3 space-y-1">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sources</div>
-              {(detail.firm.researchSources ?? []).slice(0, 8).map((source) => (
-                <a key={source} href={source} target="_blank" rel="noreferrer" className="block truncate text-xs text-primary-700 hover:underline">
-                  {source}
-                </a>
-              ))}
-            </div>
-          ) : null}
+          <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-200">
+            {detail.firm.researchSummary ?? "No research summary yet. Run “Refresh Research” to enrich this lead."}
+          </p>
         </CardBody>
       </Card>
 
@@ -177,25 +174,25 @@ export function LeadDetailPage(): JSX.Element {
           <div className="max-h-[320px] overflow-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left">
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Status</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Mode</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Prepared</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Result</th>
+                <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left dark:border-slate-700 dark:bg-slate-800">
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Status</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Mode</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Prepared</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Result</th>
                 </tr>
               </thead>
               <tbody>
                 {detail.submissionRequests.map((request) => (
-                  <tr key={request.id} className="border-b border-slate-50 hover:bg-slate-50">
+                  <tr key={request.id} className="border-b border-slate-50 hover:bg-slate-50 dark:border-slate-700/50 dark:hover:bg-slate-800/50">
                     <td className="px-4 py-2"><StatusPill status={request.status} /></td>
-                    <td className="px-4 py-2 text-slate-600">{request.mode}</td>
-                    <td className="px-4 py-2 text-xs text-slate-500">{dayjs(request.preparedAt).format("MMM D, YYYY HH:mm")}</td>
-                    <td className="px-4 py-2 text-xs text-slate-600">{request.resultNote ?? "-"}</td>
+                    <td className="px-4 py-2 text-slate-600 dark:text-slate-300">{request.mode}</td>
+                    <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">{dayjs(request.preparedAt).format("MMM D, YYYY HH:mm")}</td>
+                    <td className="px-4 py-2 text-xs text-slate-600 dark:text-slate-300">{request.resultNote ?? "-"}</td>
                   </tr>
                 ))}
                 {detail.submissionRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-4 py-6 text-center text-slate-400">No submission requests yet.</td>
+                    <td colSpan={4} className="px-4 py-6 text-center text-slate-400 dark:text-slate-500">No submission requests yet.</td>
                   </tr>
                 ) : null}
               </tbody>
@@ -211,16 +208,16 @@ export function LeadDetailPage(): JSX.Element {
           </CardHeader>
           <CardBody className="space-y-2">
             {detail.events.map((event) => (
-              <div key={event.id} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+              <div key={event.id} className="rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
                 <div className="flex items-center justify-between">
                   <StatusPill status={event.status} />
-                  <span className="text-xs text-slate-500">{dayjs(event.attemptedAt).format("MMM D, YYYY HH:mm:ss")}</span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400">{dayjs(event.attemptedAt).format("MMM D, YYYY HH:mm:ss")}</span>
                 </div>
-                <p className="mt-1 text-slate-600">{event.note ?? "-"}</p>
+                <p className="mt-1 text-slate-600 dark:text-slate-300">{event.note ?? "-"}</p>
                 {event.blockedReason ? <p className="mt-1 text-xs text-red-600">Blocked: {event.blockedReason}</p> : null}
               </div>
             ))}
-            {detail.events.length === 0 ? <p className="text-sm text-slate-400">No timeline events yet.</p> : null}
+            {detail.events.length === 0 ? <p className="text-sm text-slate-400 dark:text-slate-500">No timeline events yet.</p> : null}
           </CardBody>
         </Card>
 
@@ -230,15 +227,15 @@ export function LeadDetailPage(): JSX.Element {
           </CardHeader>
           <CardBody className="space-y-2">
             {detail.logs.map((log) => (
-              <div key={log.id} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+              <div key={log.id} className="rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-700">{log.level.toUpperCase()}</span>
-                  <span className="text-xs text-slate-500">{dayjs(log.timestamp).format("MMM D, YYYY HH:mm:ss")}</span>
+                  <span className="font-semibold text-slate-700 dark:text-slate-200">{log.level.toUpperCase()}</span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400">{dayjs(log.timestamp).format("MMM D, YYYY HH:mm:ss")}</span>
                 </div>
-                <p className="mt-1 text-slate-600">{log.message}</p>
+                <p className="mt-1 text-slate-600 dark:text-slate-300">{log.message}</p>
               </div>
             ))}
-            {detail.logs.length === 0 ? <p className="text-sm text-slate-400">No execution logs for this lead yet.</p> : null}
+            {detail.logs.length === 0 ? <p className="text-sm text-slate-400 dark:text-slate-500">No execution logs for this lead yet.</p> : null}
           </CardBody>
         </Card>
       </div>

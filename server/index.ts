@@ -2,6 +2,7 @@ import cors from "cors";
 import dayjs from "dayjs";
 import express from "express";
 import path from "node:path";
+import { URL } from "node:url";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { StateStore } from "./domain/store.js";
@@ -168,6 +169,19 @@ function baseNameFromFile(fileName: string): string {
   const parts = withoutQuery.split(".");
   if (parts.length <= 1) return withoutQuery || "Imported List";
   return parts.slice(0, -1).join(".") || withoutQuery || "Imported List";
+}
+
+function normalizeWebsiteInput(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    const pathname = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
+    return `${parsed.origin}${pathname}`;
+  } catch {
+    return withScheme.replace(/\s+/g, "");
+  }
 }
 
 function summarizeLeadLists(
@@ -518,14 +532,11 @@ async function runFirmResearch(
   if (!current) return false;
   const now = new Date().toISOString();
 
-  if (current.stage === "lead") {
-    store.upsertFirm({
-      ...current,
-      stage: "researching",
-      statusReason: startupReason,
-      lastTouchedAt: now
-    });
-  }
+  store.upsertFirm({
+    ...current,
+    statusReason: startupReason,
+    lastTouchedAt: now
+  });
 
   try {
     const result = await researchLead(current, workspace.profile);
@@ -1263,6 +1274,140 @@ app.get(
     const all = store.listFirms(workspaceId);
     const start = (page - 1) * limit;
     res.json({ firms: all.slice(start, start + limit), total: all.length });
+  })
+);
+
+const updateFirmListSchema = z.object({
+  listName: z.string().trim().max(120).optional().nullable()
+});
+
+app.patch(
+  "/api/firms/:id/list",
+  asyncHandler(async (req, res) => {
+    const parsed = updateFirmListSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const firm = store.getFirm(req.params.id, workspaceId);
+    if (!firm) {
+      res.status(404).json({ message: "Firm not found" });
+      return;
+    }
+
+    const nextList = normalizeListName(parsed.data.listName ?? undefined);
+    const currentKey = normalizeListKey(firm.sourceListName);
+    const nextKey = normalizeListKey(nextList);
+    if (currentKey === nextKey) {
+      res.json({
+        ok: true,
+        firm,
+        lists: summarizeLeadLists(store.listFirms(workspaceId), store.listImportBatches(workspaceId))
+      });
+      return;
+    }
+
+    const updated: Firm = {
+      ...firm,
+      sourceListName: nextList,
+      lastTouchedAt: new Date().toISOString(),
+      notes: mergeUniqueText(
+        [
+          ...(firm.notes ?? []),
+          nextList ? `Moved to list '${nextList}'.` : "Moved to Unassigned list."
+        ],
+        24
+      )
+    };
+    store.upsertFirm(updated);
+    await store.persist();
+
+    res.json({
+      ok: true,
+      firm: updated,
+      lists: summarizeLeadLists(store.listFirms(workspaceId), store.listImportBatches(workspaceId))
+    });
+  })
+);
+
+const manualLeadSchema = z.object({
+  name: z.string().trim().min(2).max(180),
+  website: z.string().trim().min(3).max(260),
+  listName: z.string().trim().max(120).optional().nullable()
+});
+
+app.post(
+  "/api/firms/manual",
+  asyncHandler(async (req, res) => {
+    const parsed = manualLeadSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const name = parsed.data.name.trim();
+    const website = normalizeWebsiteInput(parsed.data.website);
+    const sourceListName = normalizeListName(parsed.data.listName ?? undefined);
+    const identity = normalizeFirmIdentity(name, website);
+
+    const duplicate = store.listFirms(workspaceId).find((firm) => normalizeFirmIdentity(firm.name, firm.website) === identity);
+    if (duplicate) {
+      res.status(409).json({ message: "This lead already exists in your workspace." });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const newFirm: Firm = {
+      id: uuid(),
+      workspaceId,
+      name,
+      website,
+      sourceListName,
+      geography: "Unknown",
+      investorType: "VC",
+      checkSizeRange: "Unknown",
+      focusSectors: ["General"],
+      stageFocus: ["Seed", "Series A", "Growth"],
+      stage: "lead",
+      score: 0.5,
+      statusReason: "Added manually.",
+      lastTouchedAt: now,
+      contacts: [],
+      notes: ["Added manually by operator."]
+    };
+
+    store.upsertFirm(newFirm);
+    await store.persist();
+    void runResearchWatchdog();
+
+    res.status(201).json({
+      ok: true,
+      firm: newFirm,
+      lists: summarizeLeadLists(store.listFirms(workspaceId), store.listImportBatches(workspaceId))
+    });
+  })
+);
+
+app.delete(
+  "/api/firms/:id",
+  asyncHandler(async (req, res) => {
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const removed = store.removeWorkspaceFirms(workspaceId, new Set([req.params.id]));
+    if (removed.removedFirms === 0) {
+      res.status(404).json({ message: "Firm not found" });
+      return;
+    }
+
+    await runWorkspaceMaintenance(workspaceId);
+    void runResearchWatchdog();
+    res.json({
+      ok: true,
+      removed,
+      lists: summarizeLeadLists(store.listFirms(workspaceId), store.listImportBatches(workspaceId))
+    });
   })
 );
 

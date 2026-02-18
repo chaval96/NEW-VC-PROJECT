@@ -50,6 +50,7 @@ const EXTERNAL_TIMEOUT_MS = Math.max(1500, Number(process.env.RESEARCH_EXTERNAL_
 const openVcEnabled = process.env.OPENVC_ENRICH_ENABLED !== "false";
 const wikidataEnabled = process.env.WIKIDATA_ENRICH_ENABLED !== "false";
 const opencorporatesEnabled = process.env.OPENCORPORATES_ENRICH_ENABLED === "true";
+const wikipediaEnabled = process.env.WIKIPEDIA_ENRICH_ENABLED !== "false";
 
 const importantPathHints = [
   "contact",
@@ -151,6 +152,11 @@ function parseCommaSeparated(value: string): string[] {
     .split(/[|,/;]/)
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+function containsAny(text: string, terms: string[]): boolean {
+  const lower = text.toLowerCase();
+  return terms.some((term) => lower.includes(term.toLowerCase()));
 }
 
 function inferCountryFromText(text: string): string | undefined {
@@ -402,6 +408,77 @@ async function fetchWikidataHints(firm: Firm): Promise<ExternalHints | undefined
     sources: [`https://www.wikidata.org/wiki/${best.id}`],
     summary: [`Wikidata: ${best.label ?? firm.name}${best.description ? ` (${best.description})` : ""}`],
     confidenceBoost: 0.1
+  };
+}
+
+type WikipediaSearchResponse = {
+  query?: {
+    search?: Array<{
+      title: string;
+      snippet?: string;
+    }>;
+  };
+};
+
+type WikipediaSummaryResponse = {
+  extract?: string;
+  description?: string;
+  content_urls?: {
+    desktop?: {
+      page?: string;
+    };
+  };
+};
+
+async function fetchWikipediaHints(firm: Firm): Promise<ExternalHints | undefined> {
+  if (!wikipediaEnabled) return undefined;
+
+  const params = new URLSearchParams({
+    action: "query",
+    list: "search",
+    format: "json",
+    utf8: "1",
+    srlimit: "5",
+    srsearch: firm.name,
+    origin: "*"
+  });
+
+  const searchUrl = `https://en.wikipedia.org/w/api.php?${params.toString()}`;
+  const searchPayload = await fetchJson<WikipediaSearchResponse>(searchUrl);
+  const candidates = searchPayload?.query?.search ?? [];
+  if (candidates.length === 0) return undefined;
+
+  const preferred =
+    candidates.find((item) =>
+      /(venture|capital|invest|investor|private equity|angel|syndicate)/i.test(
+        `${item.title} ${item.snippet ?? ""}`
+      )
+    ) ?? candidates[0];
+  if (!preferred?.title) return undefined;
+
+  const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(preferred.title)}`;
+  const summaryPayload = await fetchJson<WikipediaSummaryResponse>(summaryUrl);
+  const extract = summaryPayload?.extract?.trim();
+  const description = summaryPayload?.description?.trim();
+  const combined = `${description ?? ""} ${extract ?? ""}`.trim();
+  if (!combined) return undefined;
+
+  const geography = inferCountryFromText(combined);
+  const investorType = toInvestorTypeFromText(combined);
+  const focusSectors = mapOpenVcFocusFromText(combined);
+  const stageFocus = inferStageFocus(combined, []);
+  const investmentFocus = inferInvestmentFocus(geography ?? "Unknown", combined);
+  const pageUrl = summaryPayload?.content_urls?.desktop?.page ?? `https://en.wikipedia.org/wiki/${encodeURIComponent(preferred.title.replace(/\s+/g, "_"))}`;
+
+  return {
+    geography,
+    investorType,
+    focusSectors,
+    stageFocus,
+    investmentFocus,
+    sources: [pageUrl],
+    summary: [`Wikipedia: ${preferred.title}${description ? ` (${description})` : ""}`],
+    confidenceBoost: 0.12
   };
 }
 
@@ -691,6 +768,21 @@ function mergeExternalHints(base: {
   };
 }
 
+function shouldFetchExternalHints(base: {
+  geography: string;
+  focusSectors: string[];
+  stageFocus: string[];
+  formSignal: { status: "discovered" | "not_found" | "unknown" };
+}): boolean {
+  const geoUnknown = base.geography.toLowerCase() === "unknown";
+  const focusUnknown =
+    base.focusSectors.length === 0 ||
+    base.focusSectors.every((item) => ["general", "generalist"].includes(item.toLowerCase()));
+  const stageUnknown = base.stageFocus.length === 0;
+  const formUnknown = base.formSignal.status !== "discovered";
+  return geoUnknown || focusUnknown || stageUnknown || formUnknown;
+}
+
 function computeQualificationScore(profile: CompanyProfile, sectors: string[], stageFocus: string[], investmentFocus: string[]): number {
   const profileText = `${profile.oneLiner} ${profile.longDescription} ${profile.fundraising.round}`.toLowerCase();
   const sectorHits = sectors.filter((sector) => profileText.includes(sector.toLowerCase().replace(/\s+/g, ""))).length;
@@ -721,23 +813,79 @@ function selectFormRoute(pages: CrawlPage[]): { status: "discovered" | "not_foun
   return { status: "unknown", hint: best.url };
 }
 
-function buildResearchSummary(
+function withArticle(value: string): string {
+  const lower = value.trim().toLowerCase();
+  if (!lower) return "an investor";
+  const article = /^[aeiou]/.test(lower) ? "an" : "a";
+  return `${article} ${value}`;
+}
+
+function inferWebsiteSignals(text: string): string[] {
+  const signals: string[] = [];
+  if (containsAny(text, ["early stage", "pre-seed", "seed investor"])) signals.push("early-stage investing");
+  if (containsAny(text, ["women-owned", "women led", "female founders", "women entrepreneurs"])) {
+    signals.push("support for women-led businesses");
+  }
+  if (containsAny(text, ["b2b", "enterprise"])) signals.push("B2B and enterprise companies");
+  if (containsAny(text, ["global", "worldwide"])) signals.push("global coverage");
+  if (containsAny(text, ["north america", "united states", "u.s."])) signals.push("North American opportunities");
+  if (containsAny(text, ["europe", "eu"])) signals.push("European opportunities");
+  return uniqueTop(signals, 3);
+}
+
+function formatList(values: string[], fallback = "not clearly specified"): string {
+  const cleaned = values.map((value) => value.trim()).filter((value) => value.length > 0);
+  if (cleaned.length === 0) return fallback;
+  if (cleaned.length === 1) return cleaned[0];
+  if (cleaned.length === 2) return `${cleaned[0]} and ${cleaned[1]}`;
+  return `${cleaned.slice(0, -1).join(", ")}, and ${cleaned[cleaned.length - 1]}`;
+}
+
+function buildInvestorBrief(
+  firm: Firm,
   geography: string,
+  investorType: Firm["investorType"],
   sectors: string[],
   stageFocus: string[],
   investmentFocus: string[],
-  formStatus: "discovered" | "not_found" | "unknown"
+  formStatus: "discovered" | "not_found" | "unknown",
+  text: string,
+  externalSummary: string[]
 ): string {
-  const parts = [
-    `Geo: ${geography}`,
-    `Sectors: ${sectors.join(", ")}`,
-    `Stages: ${stageFocus.join(", ")}`,
-    `Focus: ${investmentFocus.join(", ")}`
-  ];
-  if (formStatus === "discovered") parts.push("Form: discovered");
-  if (formStatus === "not_found") parts.push("Form: not found");
-  if (formStatus === "unknown") parts.push("Form: unknown");
-  return parts.join(" | ");
+  const geoLabel = geography.toLowerCase() === "unknown" ? "location not clearly disclosed" : geography;
+  const focusAreas = sectors.filter((item) => item.toLowerCase() !== "general" && item.toLowerCase() !== "generalist");
+  const stageAreas = stageFocus.filter((item) => item.trim().length > 0);
+  const investmentAreas = investmentFocus.filter((item) => item.trim().length > 0);
+  const signals = inferWebsiteSignals(text);
+
+  const sentences: string[] = [];
+  sentences.push(
+    `${firm.name} appears to be ${withArticle(investorType)} with ${geoLabel === "location not clearly disclosed" ? geoLabel : `operations centered in ${geoLabel}`}.`
+  );
+  sentences.push(
+    focusAreas.length > 0
+      ? `Its public profile indicates focus areas such as ${formatList(focusAreas)}.`
+      : "Its public profile does not clearly specify sector focus areas."
+  );
+  sentences.push(
+    stageAreas.length > 0
+      ? `It most often signals interest in ${formatList(stageAreas)} rounds${investmentAreas.length > 0 ? ` with emphasis on ${formatList(investmentAreas)}` : ""}.`
+      : `Investment stage preferences are not explicit${investmentAreas.length > 0 ? `, but regional focus points to ${formatList(investmentAreas)}` : ""}.`
+  );
+
+  if (signals.length > 0) {
+    sentences.push(`Additional signals mention ${formatList(signals)}.`);
+  } else if (externalSummary.length > 0) {
+    sentences.push(`${externalSummary[0].replace(/^Wikipedia:\s*/i, "").replace(/^Wikidata:\s*/i, "")}.`);
+  }
+
+  if (formStatus === "discovered") {
+    sentences.push("A reachable contact or application form appears to be available on the website.");
+  } else if (formStatus === "not_found") {
+    sentences.push("A dedicated startup application form is not clearly exposed on the website right now.");
+  }
+
+  return sentences.slice(0, 4).join(" ");
 }
 
 export async function researchLead(firm: Firm, profile: CompanyProfile): Promise<LeadResearchResult> {
@@ -752,13 +900,22 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
   const baseCheckSizeRange = inferCheckSizeRange(mergedText, firm.checkSizeRange);
   const baseFormSignal = selectFormRoute(pages);
 
-  const externalHints = (
-    await Promise.all([
-      fetchOpenVcHints(firm),
-      fetchWikidataHints(firm),
-      fetchOpenCorporatesHints(firm)
-    ])
-  ).filter((item): item is ExternalHints => Boolean(item));
+  const shouldFetchExternal = shouldFetchExternalHints({
+    geography: baseGeography,
+    focusSectors: baseFocusSectors,
+    stageFocus: baseStageFocus,
+    formSignal: baseFormSignal
+  });
+  const externalHints = shouldFetchExternal
+    ? (
+        await Promise.all([
+          fetchOpenVcHints(firm),
+          fetchWikidataHints(firm),
+          fetchWikipediaHints(firm),
+          fetchOpenCorporatesHints(firm)
+        ])
+      ).filter((item): item is ExternalHints => Boolean(item))
+    : [];
 
   const merged = mergeExternalHints(
     {
@@ -775,7 +932,7 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
 
   const qualificationScore = computeQualificationScore(profile, merged.focusSectors, merged.stageFocus, merged.investmentFocus);
   const qualified = qualificationScore >= 0.55;
-  let nextStage: PipelineStage = qualified ? "qualified" : "researching";
+  let nextStage: PipelineStage = qualified ? "qualified" : "lead";
   if (qualified && merged.formSignal.status === "discovered") {
     nextStage = "form_discovered";
   }
@@ -791,22 +948,23 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
       ? "Qualified fit and form route discovered."
       : qualified
         ? "Researched and qualified by funding profile fit."
-        : "Researched but below qualification threshold.";
+        : "Researched, but currently below qualification threshold.";
 
   const sourceLinks = uniqueTop(
     [...pages.map((page) => page.url), ...merged.sources],
     10
   );
-  const summaryBits = [
-    ...merged.summary,
-    buildResearchSummary(
-      merged.geography,
-      merged.focusSectors,
-      merged.stageFocus,
-      merged.investmentFocus,
-      merged.formSignal.status
-    )
-  ];
+  const brief = buildInvestorBrief(
+    firm,
+    merged.geography,
+    merged.investorType,
+    merged.focusSectors,
+    merged.stageFocus,
+    merged.investmentFocus,
+    merged.formSignal.status,
+    mergedText,
+    merged.summary
+  );
 
   return {
     geography: merged.geography,
@@ -822,6 +980,6 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
     nextStage,
     statusReason,
     researchSources: sourceLinks,
-    researchSummary: uniqueTop(summaryBits, 8).join(" | ")
+    researchSummary: brief
   };
 }

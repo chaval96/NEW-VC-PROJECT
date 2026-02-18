@@ -217,6 +217,45 @@ export async function getFirms(workspaceId: string): Promise<Firm[]> {
   return firms;
 }
 
+export function createManualLead(
+  workspaceId: string,
+  payload: { name: string; website: string; listName?: string }
+): Promise<{ ok: true; firm: Firm; lists: LeadListSummary[] }> {
+  return api<{ ok: true; firm: Firm; lists: LeadListSummary[] }>(
+    withWorkspace("/api/firms/manual", workspaceId),
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function updateLeadList(
+  workspaceId: string,
+  firmId: string,
+  listName?: string
+): Promise<{ ok: true; firm: Firm; lists: LeadListSummary[] }> {
+  return api<{ ok: true; firm: Firm; lists: LeadListSummary[] }>(
+    withWorkspace(`/api/firms/${firmId}/list`, workspaceId),
+    {
+      method: "PATCH",
+      body: JSON.stringify({ listName })
+    }
+  );
+}
+
+export function deleteLead(
+  workspaceId: string,
+  firmId: string
+): Promise<{ ok: true; removed: { removedFirms: number }; lists: LeadListSummary[] }> {
+  return api<{ ok: true; removed: { removedFirms: number }; lists: LeadListSummary[] }>(
+    withWorkspace(`/api/firms/${firmId}`, workspaceId),
+    {
+      method: "DELETE"
+    }
+  );
+}
+
 export function getProfile(workspaceId: string): Promise<Profile> {
   return api<Profile>(withWorkspace("/api/profile", workspaceId));
 }

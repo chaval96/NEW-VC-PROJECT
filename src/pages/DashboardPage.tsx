@@ -15,14 +15,6 @@ interface DashboardPageProps {
   user: AuthUser;
 }
 
-function stageLabel(value: string): string {
-  return value
-    .replaceAll("_", " ")
-    .split(" ")
-    .map((part) => (part.length > 0 ? `${part[0].toUpperCase()}${part.slice(1)}` : part))
-    .join(" ");
-}
-
 type PipelineBucketKey = "leads" | "qualified" | "submission_attempt" | "submitted";
 
 function inBucket(stage: string, bucket: PipelineBucketKey): boolean {
@@ -66,15 +58,6 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
     void boot();
   }, [workspaceId, navigate, refresh]);
 
-  const stageBreakdown = useMemo(() => {
-    if (!overview) return [];
-    const total = overview.stageBreakdown.reduce((sum, item) => sum + item.count, 0);
-    return overview.stageBreakdown.map((item) => ({
-      ...item,
-      percentage: total === 0 ? 0 : Math.round((item.count / total) * 100)
-    }));
-  }, [overview]);
-
   const pipelineBuckets = useMemo(() => {
     if (!overview) return [];
     const defs: Array<{ key: PipelineBucketKey; label: string; subtitle: string }> = [
@@ -103,7 +86,7 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
   if (!overview) {
     return (
       <div className="mx-auto max-w-7xl px-6 py-8">
-        <p className="text-sm text-slate-500">{error ?? "No project data found."}</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">{error ?? "No project data found."}</p>
       </div>
     );
   }
@@ -112,8 +95,8 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
     <div className="mx-auto max-w-7xl px-6 py-8 animate-fade-in">
       <div className="mb-8 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">{overview.workspace.name}</h1>
-          <p className="mt-1 text-slate-500">Fundraising performance overview for {user.name}</p>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{overview.workspace.name}</h1>
+          <p className="mt-1 text-slate-500 dark:text-slate-400">Fundraising performance overview for {user.name}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="secondary" onClick={() => navigate(`/projects/${workspaceId}/operations`)}>
@@ -128,7 +111,11 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
         </div>
       </div>
 
-      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+      {error ? (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+          {error}
+        </div>
+      ) : null}
 
       <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-5">
         <KpiCard label="Investors" value={overview.kpis.targetsTotal} subtitle="Active targets" />
@@ -141,21 +128,21 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
       <Card className="mb-6">
         <CardBody>
           <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
-            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-              <div className="text-slate-500">Pending approvals</div>
-              <div className="mt-1 text-lg font-semibold text-slate-800">{overview.pendingApprovals}</div>
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-800">
+              <div className="text-slate-500 dark:text-slate-400">Pending approvals</div>
+              <div className="mt-1 text-lg font-semibold text-slate-800 dark:text-slate-100">{overview.pendingApprovals}</div>
             </div>
-            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-              <div className="text-slate-500">Retry queue</div>
-              <div className="mt-1 text-lg font-semibold text-slate-800">{overview.ops.pendingRetries}</div>
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-800">
+              <div className="text-slate-500 dark:text-slate-400">Retry queue</div>
+              <div className="mt-1 text-lg font-semibold text-slate-800 dark:text-slate-100">{overview.ops.pendingRetries}</div>
             </div>
-            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-              <div className="text-slate-500">Stuck executions</div>
-              <div className="mt-1 text-lg font-semibold text-slate-800">{overview.ops.staleExecutions}</div>
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-800">
+              <div className="text-slate-500 dark:text-slate-400">Stuck executions</div>
+              <div className="mt-1 text-lg font-semibold text-slate-800 dark:text-slate-100">{overview.ops.staleExecutions}</div>
             </div>
-            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-              <div className="text-slate-500">Failed tasks (24h)</div>
-              <div className="mt-1 text-lg font-semibold text-slate-800">{overview.ops.failedTasks24h}</div>
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-800">
+              <div className="text-slate-500 dark:text-slate-400">Failed tasks (24h)</div>
+              <div className="mt-1 text-lg font-semibold text-slate-800 dark:text-slate-100">{overview.ops.failedTasks24h}</div>
             </div>
           </div>
         </CardBody>
@@ -195,7 +182,7 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
           </CardHeader>
           <CardBody>
             {overview.ops.alerts.length === 0 ? (
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300">
                 No active alerts.
               </div>
             ) : (
@@ -213,10 +200,10 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
             )}
 
             <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-              <div className="rounded border border-slate-200 px-2 py-1 text-slate-600">Stale runs: {overview.ops.staleRuns}</div>
-              <div className="rounded border border-slate-200 px-2 py-1 text-slate-600">Stuck execs: {overview.ops.staleExecutions}</div>
-              <div className="rounded border border-slate-200 px-2 py-1 text-slate-600">Pending retries: {overview.ops.pendingRetries}</div>
-              <div className="rounded border border-slate-200 px-2 py-1 text-slate-600">Pending approvals: {overview.pendingApprovals}</div>
+              <div className="rounded border border-slate-200 px-2 py-1 text-slate-600 dark:border-slate-700 dark:text-slate-300">Stale runs: {overview.ops.staleRuns}</div>
+              <div className="rounded border border-slate-200 px-2 py-1 text-slate-600 dark:border-slate-700 dark:text-slate-300">Stuck execs: {overview.ops.staleExecutions}</div>
+              <div className="rounded border border-slate-200 px-2 py-1 text-slate-600 dark:border-slate-700 dark:text-slate-300">Pending retries: {overview.ops.pendingRetries}</div>
+              <div className="rounded border border-slate-200 px-2 py-1 text-slate-600 dark:border-slate-700 dark:text-slate-300">Pending approvals: {overview.pendingApprovals}</div>
             </div>
           </CardBody>
         </Card>
@@ -245,18 +232,18 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
         </CardHeader>
         <CardBody>
           {overview.activeRuns.length === 0 ? (
-            <p className="text-sm text-slate-400">No active runs right now.</p>
+            <p className="text-sm text-slate-400 dark:text-slate-500">No active runs right now.</p>
           ) : (
             <div className="space-y-2">
               {overview.activeRuns.map((run) => (
                 <Link
                   key={run.id}
                   to={`/projects/${workspaceId}/runs/${run.id}`}
-                  className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-sm transition-colors hover:bg-slate-50"
+                  className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-sm transition-colors hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800/50"
                 >
                   <div>
-                    <div className="font-medium text-slate-800">Run {run.id.slice(0, 8)}</div>
-                    <div className="text-xs text-slate-500">{run.mode} · {run.processedFirms}/{run.totalFirms} processed</div>
+                    <div className="font-medium text-slate-800 dark:text-slate-100">Run {run.id.slice(0, 8)}</div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">{run.mode} · {run.processedFirms}/{run.totalFirms} processed</div>
                   </div>
                   <StatusPill status={run.status} />
                 </Link>

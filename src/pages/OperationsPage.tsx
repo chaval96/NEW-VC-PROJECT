@@ -1,12 +1,14 @@
 import dayjs from "dayjs";
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   activateWorkspace,
   approveSubmission,
   bulkApproveSubmissions,
   bulkRejectSubmissions,
+  createManualLead,
   createRun,
+  deleteLead,
   deleteLeadList,
   exportFirmsCsv,
   exportSubmissionsCsv,
@@ -17,7 +19,8 @@ import {
   importFirmsFile,
   importFirmsFromDrive,
   queueResearchRun,
-  renameLeadList
+  renameLeadList,
+  updateLeadList
 } from "../api";
 import { Button } from "../components/ui/Button";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
@@ -32,6 +35,14 @@ interface OperationsPageProps {
 
 const DRIVE_HOST_PATTERN = /^https:\/\/(docs|drive)\.google\.com\//i;
 const ALLOWED_EXTENSIONS = [".csv", ".xlsx", ".xls"];
+
+type StageBucket = "all" | "leads" | "qualified" | "submission_attempt" | "submitted";
+const BUCKET_STAGE_MAP: Record<Exclude<StageBucket, "all">, string[]> = {
+  leads: ["lead", "researching"],
+  qualified: ["qualified", "form_discovered"],
+  submission_attempt: ["form_filled", "review", "lost"],
+  submitted: ["submitted", "won"]
+};
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -57,6 +68,7 @@ function isAllowedFile(fileName: string): boolean {
 export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [firms, setFirms] = useState<Firm[]>([]);
   const [queue, setQueue] = useState<SubmissionRequest[]>([]);
@@ -73,6 +85,8 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   const [exportingFirms, setExportingFirms] = useState(false);
   const [exportingSubmissions, setExportingSubmissions] = useState(false);
   const [queueingResearch, setQueueingResearch] = useState(false);
+  const [manualAdding, setManualAdding] = useState(false);
+  const [leadActionBusyId, setLeadActionBusyId] = useState<string>();
 
   const [driveLink, setDriveLink] = useState("");
   const [listName, setListName] = useState("");
@@ -85,11 +99,15 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
 
   const [leadQuery, setLeadQuery] = useState("");
   const [leadStageFilter, setLeadStageFilter] = useState<string>("all");
+  const [stageBucket, setStageBucket] = useState<StageBucket>("all");
   const [listSearch, setListSearch] = useState("");
   const [selectedListNames, setSelectedListNames] = useState<string[]>([]);
   const [editingListName, setEditingListName] = useState<string>();
   const [editingListValue, setEditingListValue] = useState("");
   const [listActionBusy, setListActionBusy] = useState<string>();
+  const [manualLeadName, setManualLeadName] = useState("");
+  const [manualLeadWebsite, setManualLeadWebsite] = useState("");
+  const [manualLeadListName, setManualLeadListName] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -128,6 +146,20 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
     void boot();
   }, [workspaceId, navigate, refresh]);
 
+  useEffect(() => {
+    const bucketParam = searchParams.get("bucket");
+    const nextBucket: StageBucket =
+      bucketParam === "leads" || bucketParam === "qualified" || bucketParam === "submission_attempt" || bucketParam === "submitted"
+        ? bucketParam
+        : "all";
+    setStageBucket(nextBucket);
+
+    const listParam = searchParams.get("list");
+    if (listParam) {
+      setSelectedListNames([listParam]);
+    }
+  }, [searchParams]);
+
   const filteredQueue = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return queue.filter((item) => {
@@ -147,15 +179,17 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
 
   const leadResults = useMemo(() => {
     const q = leadQuery.trim().toLowerCase();
+    const allowedStages = stageBucket === "all" ? undefined : BUCKET_STAGE_MAP[stageBucket];
     return firms
       .filter((firm) => {
         const qOk = q.length === 0 || firm.name.toLowerCase().includes(q) || firm.website.toLowerCase().includes(q);
+        const bucketOk = !allowedStages || allowedStages.includes(firm.stage);
         const stageOk = leadStageFilter === "all" || firm.stage === leadStageFilter;
         const listOk = selectedListNames.length === 0 || selectedListNames.includes(firm.sourceListName ?? "Unassigned");
-        return qOk && stageOk && listOk;
+        return qOk && bucketOk && stageOk && listOk;
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [firms, leadQuery, leadStageFilter, selectedListNames]);
+  }, [firms, leadQuery, leadStageFilter, selectedListNames, stageBucket]);
 
   const queueSummary = useMemo(
     () => ({
@@ -166,6 +200,32 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
     }),
     [queue]
   );
+
+  const bucketCards = useMemo(() => {
+    const total = Math.max(1, firms.length);
+    const defs: Array<{ key: Exclude<StageBucket, "all">; label: string }> = [
+      { key: "leads", label: "Leads" },
+      { key: "qualified", label: "Qualified Leads" },
+      { key: "submission_attempt", label: "Submission Attempt" },
+      { key: "submitted", label: "Submitted" }
+    ];
+    return defs.map((def) => {
+      const count = firms.filter((firm) => BUCKET_STAGE_MAP[def.key].includes(firm.stage)).length;
+      return {
+        ...def,
+        count,
+        percentage: Math.round((count / total) * 100)
+      };
+    });
+  }, [firms]);
+
+  const listOptions = useMemo(() => {
+    const names = lists
+      .map((list) => list.name)
+      .filter((name) => name.trim().length > 0)
+      .sort((a, b) => a.localeCompare(b));
+    return names;
+  }, [lists]);
 
   useEffect(() => {
     if (!previewId && filteredQueue.length > 0) {
@@ -483,6 +543,109 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
     }
   };
 
+  const focusList = (name: string): void => {
+    setSelectedListNames([name]);
+    const next = new URLSearchParams(searchParams);
+    next.set("list", name);
+    setSearchParams(next, { replace: true });
+  };
+
+  const clearListFilter = (): void => {
+    setSelectedListNames([]);
+    const next = new URLSearchParams(searchParams);
+    next.delete("list");
+    setSearchParams(next, { replace: true });
+  };
+
+  const setBucketFilter = (value: StageBucket): void => {
+    setStageBucket(value);
+    const next = new URLSearchParams(searchParams);
+    if (value === "all") {
+      next.delete("bucket");
+    } else {
+      next.set("bucket", value);
+    }
+    setSearchParams(next, { replace: true });
+  };
+
+  const onManualAddLead = async (): Promise<void> => {
+    if (!workspaceId) return;
+    const name = manualLeadName.trim();
+    const website = manualLeadWebsite.trim();
+    if (!name || !website) {
+      setError("Manual lead requires both company name and website.");
+      return;
+    }
+
+    setManualAdding(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      await createManualLead(workspaceId, {
+        name,
+        website,
+        listName: manualLeadListName.trim() || undefined
+      });
+      setManualLeadName("");
+      setManualLeadWebsite("");
+      setManualLeadListName("");
+      setNotice(`Lead '${name}' added successfully.`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add lead manually.");
+    } finally {
+      setManualAdding(false);
+    }
+  };
+
+  const onLeadListChange = async (firm: Firm, rawValue: string): Promise<void> => {
+    if (!workspaceId) return;
+    let nextList: string | undefined;
+
+    if (rawValue === "__new__") {
+      const entered = window.prompt("New list name", firm.sourceListName ?? "");
+      if (!entered) return;
+      nextList = entered.trim();
+      if (!nextList) return;
+    } else if (rawValue === "__unassigned__") {
+      nextList = undefined;
+    } else {
+      nextList = rawValue;
+    }
+
+    setLeadActionBusyId(`list:${firm.id}`);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      await updateLeadList(workspaceId, firm.id, nextList);
+      setNotice(nextList ? `'${firm.name}' moved to '${nextList}'.` : `'${firm.name}' moved to Unassigned.`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update lead list.");
+    } finally {
+      setLeadActionBusyId(undefined);
+    }
+  };
+
+  const onDeleteLead = async (firm: Firm): Promise<void> => {
+    if (!workspaceId) return;
+    const confirmed = window.confirm(`Delete lead '${firm.name}'? This removes related queue/events/logs for this lead.`);
+    if (!confirmed) return;
+
+    setLeadActionBusyId(`delete:${firm.id}`);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      await deleteLead(workspaceId, firm.id);
+      setNotice(`Lead '${firm.name}' deleted.`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete lead.");
+    } finally {
+      setLeadActionBusyId(undefined);
+    }
+  };
+
   if (loading) {
     return <div className="mx-auto max-w-7xl px-6 py-8" />;
   }
@@ -508,15 +671,23 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
         </div>
       </div>
 
-      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
-      {notice ? <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{notice}</div> : null}
+      {error ? (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+          {error}
+        </div>
+      ) : null}
+      {notice ? (
+        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300">
+          {notice}
+        </div>
+      ) : null}
 
       <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-5">
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Leads</div><div className="mt-1 text-2xl font-bold text-slate-800">{firms.length}</div></div>
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Lists</div><div className="mt-1 text-2xl font-bold text-slate-800">{lists.length}</div></div>
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Pending approvals</div><div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.pendingApproval}</div></div>
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Retry queue</div><div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.pendingRetry}</div></div>
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Failed</div><div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.failed}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="text-xs text-slate-500 dark:text-slate-400">Leads</div><div className="mt-1 text-2xl font-bold text-slate-800 dark:text-slate-100">{firms.length}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="text-xs text-slate-500 dark:text-slate-400">Lists</div><div className="mt-1 text-2xl font-bold text-slate-800 dark:text-slate-100">{lists.length}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="text-xs text-slate-500 dark:text-slate-400">Pending approvals</div><div className="mt-1 text-2xl font-bold text-slate-800 dark:text-slate-100">{queueSummary.pendingApproval}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="text-xs text-slate-500 dark:text-slate-400">Retry queue</div><div className="mt-1 text-2xl font-bold text-slate-800 dark:text-slate-100">{queueSummary.pendingRetry}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm dark:border-slate-700 dark:bg-slate-800"><div className="text-xs text-slate-500 dark:text-slate-400">Failed</div><div className="mt-1 text-2xl font-bold text-slate-800 dark:text-slate-100">{queueSummary.failed}</div></div>
       </div>
 
       <div className="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
@@ -532,10 +703,10 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
               onChange={(event) => setListName(event.target.value)}
             />
 
-            <div className="flex items-center justify-between rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
+            <div className="flex items-center justify-between rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 dark:border-slate-600 dark:bg-slate-800/40">
               <div>
-                <div className="text-sm font-semibold text-slate-800">Upload CSV or Excel</div>
-                <div className="text-xs text-slate-500">Accepted: .csv, .xlsx, .xls</div>
+                <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Upload CSV or Excel</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">Accepted: .csv, .xlsx, .xls</div>
               </div>
               <Button size="sm" variant="secondary" onClick={onChooseFile} disabled={uploading}>
                 {uploading ? "Uploading..." : "Choose file"}
@@ -552,6 +723,34 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
               <Button variant="secondary" onClick={() => void onDriveImport()} disabled={importingDrive}>
                 {importingDrive ? "Importing..." : "Import from Drive"}
               </Button>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-700 dark:bg-slate-800/30">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Add Lead Manually
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <Input
+                  placeholder="Company name"
+                  value={manualLeadName}
+                  onChange={(event) => setManualLeadName(event.target.value)}
+                />
+                <Input
+                  placeholder="Website (domain or URL)"
+                  value={manualLeadWebsite}
+                  onChange={(event) => setManualLeadWebsite(event.target.value)}
+                />
+                <Input
+                  placeholder="List name (optional)"
+                  value={manualLeadListName}
+                  onChange={(event) => setManualLeadListName(event.target.value)}
+                />
+              </div>
+              <div className="mt-3">
+                <Button size="sm" onClick={() => void onManualAddLead()} disabled={manualAdding}>
+                  {manualAdding ? "Adding..." : "Add Lead"}
+                </Button>
+              </div>
             </div>
           </CardBody>
         </Card>
@@ -580,18 +779,18 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
             <div className="mt-4 space-y-2">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Active Runs</p>
               {runningRuns.length === 0 ? (
-                <p className="text-sm text-slate-400">No active runs.</p>
+                <p className="text-sm text-slate-400 dark:text-slate-500">No active runs.</p>
               ) : (
                 <div className="space-y-2">
                   {runningRuns.slice(0, 6).map((run) => (
                     <Link
                       key={run.id}
                       to={`/projects/${workspaceId}/runs/${run.id}`}
-                      className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50"
+                      className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700/40"
                     >
                       <div>
-                        <div className="font-medium text-slate-800">Run {run.id.slice(0, 8)}</div>
-                        <div className="text-xs text-slate-500">{run.mode} · {run.processedFirms}/{run.totalFirms} processed</div>
+                        <div className="font-medium text-slate-800 dark:text-slate-100">Run {run.id.slice(0, 8)}</div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">{run.mode} · {run.processedFirms}/{run.totalFirms} processed</div>
                       </div>
                       <StatusPill status={run.status} />
                     </Link>
@@ -607,19 +806,24 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
         <CardHeader>
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-semibold">My Lists</h2>
-            <Input className="max-w-xs" placeholder="Search lists" value={listSearch} onChange={(event) => setListSearch(event.target.value)} />
+            <div className="flex items-center gap-2">
+              {selectedListNames.length > 0 ? (
+                <Button size="sm" variant="ghost" onClick={clearListFilter}>Clear list filter</Button>
+              ) : null}
+              <Input className="max-w-xs" placeholder="Search lists" value={listSearch} onChange={(event) => setListSearch(event.target.value)} />
+            </div>
           </div>
         </CardHeader>
         <CardBody className="p-0">
           <div className="max-h-[300px] overflow-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left">
+                <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left dark:border-slate-700 dark:bg-slate-800">
                   <th className="px-4 py-2" />
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">List Name</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500"># of Leads</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Last Modified</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Actions</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">List Name</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"># of Leads</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Last Modified</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -628,11 +832,18 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                   const isUnassigned = list.name.toLowerCase() === "unassigned";
                   const isEditing = editingListName === list.name;
                   return (
-                    <tr key={list.name} className={selected ? "border-b border-primary-100 bg-primary-50/40" : "border-b border-slate-50 hover:bg-slate-50"}>
+                    <tr
+                      key={list.name}
+                      className={
+                        selected
+                          ? "border-b border-primary-100 bg-primary-50/40 dark:border-primary-900/50 dark:bg-primary-900/20"
+                          : "border-b border-slate-50 hover:bg-slate-50 dark:border-slate-700/50 dark:hover:bg-slate-800/50"
+                      }
+                    >
                       <td className="px-4 py-2">
                         <input type="checkbox" checked={selected} onChange={() => toggleListSelection(list.name)} />
                       </td>
-                      <td className="px-4 py-2 font-medium text-slate-800">
+                      <td className="px-4 py-2 font-medium text-slate-800 dark:text-slate-100">
                         {isEditing ? (
                           <Input
                             value={editingListValue}
@@ -640,14 +851,20 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                             className="max-w-xs"
                           />
                         ) : (
-                          list.name
+                          <button
+                            type="button"
+                            className="text-left hover:text-primary-700 hover:underline dark:hover:text-primary-400"
+                            onClick={() => focusList(list.name)}
+                          >
+                            {list.name}
+                          </button>
                         )}
                       </td>
-                      <td className="px-4 py-2 text-slate-700">{list.leadCount}</td>
-                      <td className="px-4 py-2 text-xs text-slate-500">{dayjs(list.updatedAt).format("MMM D, YYYY HH:mm")}</td>
+                      <td className="px-4 py-2 text-slate-700 dark:text-slate-200">{list.leadCount}</td>
+                      <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">{dayjs(list.updatedAt).format("MMM D, YYYY HH:mm")}</td>
                       <td className="px-4 py-2">
                         {isUnassigned ? (
-                          <span className="text-xs text-slate-400">System list</span>
+                          <span className="text-xs text-slate-400 dark:text-slate-500">System list</span>
                         ) : isEditing ? (
                           <div className="flex flex-wrap gap-2">
                             <Button
@@ -680,7 +897,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                 })}
                 {filteredLists.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-4 py-6 text-center text-slate-400">No lists found.</td>
+                    <td colSpan={5} className="px-4 py-6 text-center text-slate-400 dark:text-slate-500">No lists found.</td>
                   </tr>
                 ) : null}
               </tbody>
@@ -722,12 +939,12 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
             <div className="max-h-[560px] overflow-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left">
+                  <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left dark:border-slate-700 dark:bg-slate-800">
                     <th className="px-4 py-2" />
-                    <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Investor</th>
-                    <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Status</th>
-                    <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Prepared</th>
-                    <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Actions</th>
+                    <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Investor</th>
+                    <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Status</th>
+                    <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Prepared</th>
+                    <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -736,21 +953,25 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                     return (
                       <tr
                         key={item.id}
-                        className={`border-b transition-colors ${selected ? "border-primary-100 bg-primary-50/40" : "border-slate-50 hover:bg-slate-50"}`}
+                        className={`border-b transition-colors ${
+                          selected
+                            ? "border-primary-100 bg-primary-50/40 dark:border-primary-900/50 dark:bg-primary-900/20"
+                            : "border-slate-50 hover:bg-slate-50 dark:border-slate-700/50 dark:hover:bg-slate-800/50"
+                        }`}
                       >
                         <td className="px-4 py-2">
                           <input type="checkbox" checked={selected} onChange={() => toggleSelection(item.id)} />
                         </td>
                         <td className="px-4 py-2">
                           <button type="button" className="text-left" onClick={() => setPreviewId(item.id)}>
-                            <div className="font-medium text-slate-800">{item.firmName}</div>
-                            <div className="text-xs text-slate-500">{item.website}</div>
+                            <div className="font-medium text-slate-800 dark:text-slate-100">{item.firmName}</div>
+                            <div className="text-xs text-slate-500 dark:text-slate-400">{item.website}</div>
                           </button>
                         </td>
                         <td className="px-4 py-2">
                           <StatusPill status={item.status} />
                         </td>
-                        <td className="px-4 py-2 text-xs text-slate-500">{dayjs(item.preparedAt).format("MMM D, YYYY HH:mm")}</td>
+                        <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">{dayjs(item.preparedAt).format("MMM D, YYYY HH:mm")}</td>
                         <td className="px-4 py-2">
                           <div className="flex flex-wrap gap-2">
                             <Button size="sm" onClick={() => void onApprove(item.id)} disabled={busyId === item.id || busyId === "bulk-approve"}>
@@ -773,7 +994,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                   })}
                   {filteredQueue.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
+                      <td colSpan={5} className="px-4 py-8 text-center text-slate-400 dark:text-slate-500">
                         No submissions for selected filter.
                       </td>
                     </tr>
@@ -790,35 +1011,35 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
           </CardHeader>
           <CardBody>
             {!preview ? (
-              <p className="text-sm text-slate-400">Select a queue item to preview submission payload.</p>
+              <p className="text-sm text-slate-400 dark:text-slate-500">Select a queue item to preview submission payload.</p>
             ) : (
               <div className="space-y-3 text-sm">
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Investor</div>
-                  <div className="font-medium text-slate-800">{preview.firmName}</div>
+                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Investor</div>
+                  <div className="font-medium text-slate-800 dark:text-slate-100">{preview.firmName}</div>
                 </div>
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Mode</div>
-                  <div>{preview.mode}</div>
+                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Mode</div>
+                  <div className="text-slate-700 dark:text-slate-200">{preview.mode}</div>
                 </div>
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Founder</div>
-                  <div>{preview.preparedPayload.contactName}</div>
-                  <div className="text-xs text-slate-500">{preview.preparedPayload.contactEmail}</div>
+                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Founder</div>
+                  <div className="text-slate-700 dark:text-slate-200">{preview.preparedPayload.contactName}</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">{preview.preparedPayload.contactEmail}</div>
                 </div>
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Company Summary</div>
-                  <p className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
+                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Company Summary</div>
+                  <p className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                     {preview.preparedPayload.companySummary}
                   </p>
                 </div>
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Raise Summary</div>
-                  <p className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
+                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Raise Summary</div>
+                  <p className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                     {preview.preparedPayload.raiseSummary}
                   </p>
                 </div>
-                <div className="text-xs text-slate-500">
+                <div className="text-xs text-slate-500 dark:text-slate-400">
                   Prepared {dayjs(preview.preparedAt).format("MMM D, YYYY HH:mm")}
                 </div>
               </div>
@@ -831,8 +1052,39 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-semibold">Lead Explorer ({leadResults.length})</h2>
-            <div className="text-xs text-slate-500">Search any imported company and open its timeline/logs</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Search any imported company and open timeline/log details</div>
           </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <button
+              type="button"
+              onClick={() => setBucketFilter("all")}
+              className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
+                stageBucket === "all"
+                  ? "border-primary-300 bg-primary-50 text-primary-700 dark:border-primary-700 dark:bg-primary-900/30 dark:text-primary-300"
+                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700/40"
+              }`}
+            >
+              <div className="font-semibold">All</div>
+              <div>{firms.length} leads</div>
+            </button>
+            {bucketCards.map((bucket) => (
+              <button
+                key={bucket.key}
+                type="button"
+                onClick={() => setBucketFilter(bucket.key)}
+                className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
+                  stageBucket === bucket.key
+                    ? "border-primary-300 bg-primary-50 text-primary-700 dark:border-primary-700 dark:bg-primary-900/30 dark:text-primary-300"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700/40"
+                }`}
+              >
+                <div className="font-semibold">{bucket.label}</div>
+                <div>{bucket.count} leads ({bucket.percentage}%)</div>
+              </button>
+            ))}
+          </div>
+
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
             <Input placeholder="Search by company or website" value={leadQuery} onChange={(event) => setLeadQuery(event.target.value)} />
             <Select value={leadStageFilter} onChange={(event) => setLeadStageFilter(event.target.value)}>
@@ -852,48 +1104,86 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
               ))}
             </Select>
           </div>
+
           {selectedListNames.length > 0 ? (
-            <div className="mt-3 text-xs text-slate-500">Filtering by lists: {selectedListNames.join(" | ")}</div>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <span>Filtering by lists:</span>
+              {selectedListNames.map((name) => (
+                <span key={name} className="rounded-full border border-slate-300 px-2 py-0.5 dark:border-slate-600">
+                  {name}
+                </span>
+              ))}
+            </div>
           ) : null}
         </CardHeader>
         <CardBody className="p-0">
-          <div className="max-h-[520px] overflow-auto">
+          <div className="max-h-[560px] overflow-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left">
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Company</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Source List</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Geo</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Focus</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Stage</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Status Reason</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Last Updated</th>
-                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Action</th>
+                <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left dark:border-slate-700 dark:bg-slate-800">
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Company</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">List</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Geo</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Focus</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Stage</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Status Reason</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Last Updated</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {leadResults.slice(0, 300).map((firm) => (
-                  <tr key={firm.id} className="border-b border-slate-50 hover:bg-slate-50">
+                {leadResults.slice(0, 350).map((firm) => (
+                  <tr key={firm.id} className="border-b border-slate-50 hover:bg-slate-50 dark:border-slate-700/50 dark:hover:bg-slate-800/50">
                     <td className="px-4 py-2">
-                      <div className="font-medium text-slate-800">{firm.name}</div>
-                      <div className="text-xs text-slate-500">{firm.website}</div>
+                      <Link
+                        to={`/projects/${workspaceId}/leads/${firm.id}`}
+                        className="font-medium text-slate-800 hover:text-primary-700 hover:underline dark:text-slate-100 dark:hover:text-primary-400"
+                      >
+                        {firm.name}
+                      </Link>
+                      <div className="text-xs text-slate-500 dark:text-slate-400">{firm.website}</div>
                     </td>
-                    <td className="px-4 py-2 text-xs text-slate-600">{firm.sourceListName ?? "Unassigned"}</td>
-                    <td className="px-4 py-2 text-xs text-slate-600">{firm.geography ?? "Unknown"}</td>
-                    <td className="px-4 py-2 text-xs text-slate-600">{(firm.focusSectors ?? []).slice(0, 2).join(", ") || "-"}</td>
+                    <td className="px-4 py-2 text-xs text-slate-600 dark:text-slate-300">
+                      <select
+                        value={firm.sourceListName ?? "__unassigned__"}
+                        onChange={(event) => void onLeadListChange(firm, event.target.value)}
+                        disabled={leadActionBusyId === `list:${firm.id}`}
+                        className="min-w-[170px] rounded border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                      >
+                        <option value="__unassigned__">Unassigned</option>
+                        {listOptions.filter((name) => name.toLowerCase() !== "unassigned").map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                        <option value="__new__">+ Create new list</option>
+                      </select>
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-600 dark:text-slate-300">{firm.geography ?? "Unknown"}</td>
+                    <td className="px-4 py-2 text-xs text-slate-600 dark:text-slate-300">{(firm.focusSectors ?? []).slice(0, 2).join(", ") || "-"}</td>
                     <td className="px-4 py-2"><StatusPill status={firm.stage} /></td>
-                    <td className="px-4 py-2 text-xs text-slate-600 max-w-[320px] truncate">{firm.statusReason}</td>
-                    <td className="px-4 py-2 text-xs text-slate-500">{firm.lastTouchedAt ? dayjs(firm.lastTouchedAt).format("MMM D, YYYY") : "-"}</td>
+                    <td className="max-w-[320px] px-4 py-2 text-xs text-slate-600 dark:text-slate-300">{firm.statusReason}</td>
+                    <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">{firm.lastTouchedAt ? dayjs(firm.lastTouchedAt).format("MMM D, YYYY") : "-"}</td>
                     <td className="px-4 py-2">
-                      <Button size="sm" variant="secondary" onClick={() => navigate(`/projects/${workspaceId}/leads/${firm.id}`)}>
-                        Open
-                      </Button>
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="secondary" onClick={() => navigate(`/projects/${workspaceId}/leads/${firm.id}`)}>
+                          Open
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          disabled={leadActionBusyId === `delete:${firm.id}`}
+                          onClick={() => void onDeleteLead(firm)}
+                        >
+                          {leadActionBusyId === `delete:${firm.id}` ? "Deleting..." : "Delete"}
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
                 {leadResults.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-slate-400">No leads found for current filters.</td>
+                    <td colSpan={8} className="px-4 py-8 text-center text-slate-400 dark:text-slate-500">No leads found for current filters.</td>
                   </tr>
                 ) : null}
               </tbody>
