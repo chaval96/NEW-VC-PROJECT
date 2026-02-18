@@ -27,10 +27,29 @@ type CrawlPage = {
   links: string[];
 };
 
+type ExternalHints = {
+  geography?: string;
+  investorType?: Firm["investorType"];
+  checkSizeRange?: string;
+  focusSectors: string[];
+  stageFocus: string[];
+  investmentFocus: string[];
+  formDiscovery?: "discovered" | "not_found" | "unknown";
+  formRouteHint?: string;
+  sources: string[];
+  summary: string[];
+  confidenceBoost: number;
+};
+
 const MAX_PAGES_PER_FIRM = Math.max(2, Number(process.env.RESEARCH_MAX_PAGES_PER_FIRM ?? 6));
 const FETCH_TIMEOUT_MS = Math.max(2000, Number(process.env.RESEARCH_FETCH_TIMEOUT_MS ?? 5500));
 const MAX_HTML_CHARS = Math.max(40_000, Number(process.env.RESEARCH_MAX_HTML_CHARS ?? 180_000));
 const MAX_TEXT_CHARS = 60_000;
+const EXTERNAL_TIMEOUT_MS = Math.max(1500, Number(process.env.RESEARCH_EXTERNAL_TIMEOUT_MS ?? 4500));
+
+const openVcEnabled = process.env.OPENVC_ENRICH_ENABLED !== "false";
+const wikidataEnabled = process.env.WIKIDATA_ENRICH_ENABLED !== "false";
+const opencorporatesEnabled = process.env.OPENCORPORATES_ENRICH_ENABLED === "true";
 
 const importantPathHints = [
   "contact",
@@ -119,6 +138,30 @@ function uniqueTop(values: string[], limit = 3): string[] {
   return result;
 }
 
+function toLowerTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9+]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function parseCommaSeparated(value: string): string[] {
+  return value
+    .split(/[|,/;]/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function inferCountryFromText(text: string): string | undefined {
+  for (const entry of countryPatterns) {
+    if (entry.regexes.some((regex) => regex.test(text))) {
+      return entry.label;
+    }
+  }
+  return undefined;
+}
+
 function toAbsoluteUrl(base: string, href: string): string | undefined {
   try {
     const u = new URL(href, base);
@@ -189,6 +232,236 @@ async function fetchHtml(url: string): Promise<string | undefined> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchJson<T>(url: string): Promise<T | undefined> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EXTERNAL_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "user-agent": "VCReachBot/1.0 (+research)"
+      }
+    });
+    if (!response.ok) return undefined;
+    return (await response.json()) as T;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function openVcSlugCandidates(name: string): string[] {
+  const trimmed = name.trim();
+  const normalized = trimmed.replace(/\s+/g, " ").trim();
+  const slugSimple = normalized.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return uniqueTop(
+    [
+      encodeURIComponent(normalized),
+      encodeURIComponent(normalized.toLowerCase()),
+      encodeURIComponent(slugSimple),
+      encodeURIComponent(slugSimple.toLowerCase())
+    ],
+    4
+  );
+}
+
+function extractOpenVcField(text: string, label: string): string | undefined {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`${escaped}\\s*\\|\\s*([^|]{1,220})`, "i");
+  const match = text.match(regex);
+  const value = match?.[1]?.trim();
+  return value && value.length > 0 ? value : undefined;
+}
+
+function toInvestorTypeFromText(value: string): Firm["investorType"] | undefined {
+  const lower = value.toLowerCase();
+  if (lower.includes("angel")) return "Angel Network";
+  if (lower.includes("syndicate")) return "Syndicate";
+  if (lower.includes("vc") || lower.includes("venture")) return "VC";
+  return undefined;
+}
+
+function mapOpenVcFocusFromText(value: string): string[] {
+  const tokens = toLowerTokens(value);
+  const labels: string[] = [];
+  for (const item of sectorKeywords) {
+    if (item.terms.some((term) => tokens.join(" ").includes(term))) {
+      labels.push(item.label);
+    }
+  }
+  return uniqueTop(labels, 3);
+}
+
+async function fetchOpenVcHints(firm: Firm): Promise<ExternalHints | undefined> {
+  if (!openVcEnabled) return undefined;
+
+  const candidates = openVcSlugCandidates(firm.name).map((slug) => `https://www.openvc.app/fund/${slug}`);
+  for (const url of candidates) {
+    const html = await fetchHtml(url);
+    if (!html) continue;
+    const text = stripHtml(html);
+    const lower = text.toLowerCase();
+
+    if (!lower.includes("openvc") || (!lower.includes("funding stages") && !lower.includes("how to get in touch"))) {
+      continue;
+    }
+
+    const hq = extractOpenVcField(text, "Global HQ");
+    const type = extractOpenVcField(text, "Firm type");
+    const fundingStages = extractOpenVcField(text, "Funding stages");
+    const targetCountries = extractOpenVcField(text, "Target countries");
+    const ticket = extractOpenVcField(text, "Investment ticket") ?? extractOpenVcField(text, "Check size");
+    const touch = extractOpenVcField(text, "How to get in touch");
+    const tags = extractOpenVcField(text, "Tags") ?? extractOpenVcField(text, "Business models");
+
+    const sourceSummary: string[] = [];
+    if (hq) sourceSummary.push(`OpenVC HQ ${hq}`);
+    if (type) sourceSummary.push(`OpenVC type ${type}`);
+    if (fundingStages) sourceSummary.push(`OpenVC stages ${fundingStages}`);
+    if (targetCountries) sourceSummary.push(`OpenVC countries ${targetCountries}`);
+    if (ticket) sourceSummary.push(`OpenVC check ${ticket}`);
+
+    const country = hq ? inferCountryFromText(hq) : targetCountries ? inferCountryFromText(targetCountries) : undefined;
+    const investorType = type ? toInvestorTypeFromText(type) : undefined;
+    const stageFocus = fundingStages ? uniqueTop(parseCommaSeparated(fundingStages), 3) : [];
+    const investmentFocus = targetCountries ? uniqueTop(parseCommaSeparated(targetCountries), 3) : [];
+    const focusFromTags = tags ? mapOpenVcFocusFromText(tags) : [];
+
+    let formDiscovery: "discovered" | "not_found" | "unknown" | undefined;
+    if (touch) {
+      const touchLower = touch.toLowerCase();
+      if (touchLower.includes("form") || touchLower.includes("apply") || touchLower.includes("submit")) {
+        formDiscovery = "discovered";
+      }
+    }
+
+    return {
+      geography: country,
+      investorType,
+      checkSizeRange: ticket,
+      focusSectors: focusFromTags,
+      stageFocus,
+      investmentFocus,
+      formDiscovery,
+      formRouteHint: formDiscovery === "discovered" ? url : undefined,
+      sources: [url],
+      summary: sourceSummary,
+      confidenceBoost: 0.22
+    };
+  }
+
+  return undefined;
+}
+
+type WikidataSearchResponse = {
+  search?: Array<{
+    id: string;
+    label?: string;
+    description?: string;
+    title?: string;
+  }>;
+};
+
+async function fetchWikidataHints(firm: Firm): Promise<ExternalHints | undefined> {
+  if (!wikidataEnabled) return undefined;
+
+  const params = new URLSearchParams({
+    action: "wbsearchentities",
+    format: "json",
+    language: "en",
+    type: "item",
+    limit: "5",
+    origin: "*",
+    search: firm.name
+  });
+  const url = `https://www.wikidata.org/w/api.php?${params.toString()}`;
+  const payload = await fetchJson<WikidataSearchResponse>(url);
+  if (!payload?.search || payload.search.length === 0) return undefined;
+
+  const best = payload.search.find((item) =>
+    /(venture|capital|investor|investment|fund|private equity|angel)/i.test(`${item.label ?? ""} ${item.description ?? ""}`)
+  ) ?? payload.search[0];
+  if (!best) return undefined;
+
+  const text = `${best.label ?? ""} ${best.description ?? ""}`;
+  const geography = inferCountryFromText(text);
+  const investorType = toInvestorTypeFromText(text);
+  const focus = mapOpenVcFocusFromText(text);
+  const stageFocus = inferStageFocus(text, []);
+  const investmentFocus = inferInvestmentFocus(geography ?? "Unknown", text);
+
+  return {
+    geography,
+    investorType,
+    focusSectors: focus,
+    stageFocus,
+    investmentFocus,
+    sources: [`https://www.wikidata.org/wiki/${best.id}`],
+    summary: [`Wikidata: ${best.label ?? firm.name}${best.description ? ` (${best.description})` : ""}`],
+    confidenceBoost: 0.1
+  };
+}
+
+type OpenCorporatesCompany = {
+  company?: {
+    jurisdiction_code?: string;
+    current_status?: string;
+    opencorporates_url?: string;
+  };
+};
+
+type OpenCorporatesSearchResponse = {
+  results?: {
+    companies?: OpenCorporatesCompany[];
+  };
+};
+
+function jurisdictionToCountry(code?: string): string | undefined {
+  if (!code) return undefined;
+  const normalized = code.toLowerCase();
+  const map: Record<string, string> = {
+    us: "USA",
+    gb: "United Kingdom",
+    uk: "United Kingdom",
+    de: "Germany",
+    fr: "France",
+    es: "Spain",
+    it: "Italy",
+    nl: "Netherlands",
+    ch: "Switzerland",
+    sg: "Singapore",
+    in: "India",
+    jp: "Japan",
+    au: "Australia",
+    ca: "Canada"
+  };
+  return map[normalized.slice(0, 2)];
+}
+
+async function fetchOpenCorporatesHints(firm: Firm): Promise<ExternalHints | undefined> {
+  if (!opencorporatesEnabled) return undefined;
+  const params = new URLSearchParams({ q: firm.name });
+  if (process.env.OPENCORPORATES_API_TOKEN) {
+    params.set("api_token", process.env.OPENCORPORATES_API_TOKEN);
+  }
+  const url = `https://api.opencorporates.com/v0.4/companies/search?${params.toString()}`;
+  const payload = await fetchJson<OpenCorporatesSearchResponse>(url);
+  const company = payload?.results?.companies?.[0]?.company;
+  if (!company) return undefined;
+
+  const geography = jurisdictionToCountry(company.jurisdiction_code);
+  return {
+    geography,
+    focusSectors: [],
+    stageFocus: [],
+    investmentFocus: [],
+    sources: company.opencorporates_url ? [company.opencorporates_url] : [url],
+    summary: [`OpenCorporates status ${company.current_status ?? "unknown"}`],
+    confidenceBoost: 0.08
+  };
 }
 
 function scoreFormSignal(url: string, html: string, text: string): number {
@@ -355,6 +628,69 @@ function inferCheckSizeRange(text: string, current: string): string {
   return "Unknown";
 }
 
+function mergeExternalHints(base: {
+  geography: string;
+  investorType: Firm["investorType"];
+  checkSizeRange: string;
+  focusSectors: string[];
+  stageFocus: string[];
+  investmentFocus: string[];
+  formSignal: { status: "discovered" | "not_found" | "unknown"; hint?: string };
+}, hints: ExternalHints[]): {
+  geography: string;
+  investorType: Firm["investorType"];
+  checkSizeRange: string;
+  focusSectors: string[];
+  stageFocus: string[];
+  investmentFocus: string[];
+  formSignal: { status: "discovered" | "not_found" | "unknown"; hint?: string };
+  confidenceBoost: number;
+  sources: string[];
+  summary: string[];
+} {
+  let geography = base.geography;
+  let investorType = base.investorType;
+  let checkSizeRange = base.checkSizeRange;
+  let formSignal = base.formSignal;
+  let confidenceBoost = 0;
+
+  const focusSectors = [...base.focusSectors];
+  const stageFocus = [...base.stageFocus];
+  const investmentFocus = [...base.investmentFocus];
+  const sources: string[] = [];
+  const summary: string[] = [];
+
+  for (const hint of hints) {
+    if (hint.geography && geography.toLowerCase() === "unknown") geography = hint.geography;
+    if (hint.investorType && investorType === "Other") investorType = hint.investorType;
+    if (hint.checkSizeRange && checkSizeRange.toLowerCase() === "unknown") checkSizeRange = hint.checkSizeRange;
+
+    if (hint.formDiscovery === "discovered" && formSignal.status !== "discovered") {
+      formSignal = { status: "discovered", hint: hint.formRouteHint };
+    }
+
+    focusSectors.push(...hint.focusSectors);
+    stageFocus.push(...hint.stageFocus);
+    investmentFocus.push(...hint.investmentFocus);
+    sources.push(...hint.sources);
+    summary.push(...hint.summary);
+    confidenceBoost += hint.confidenceBoost;
+  }
+
+  return {
+    geography,
+    investorType,
+    checkSizeRange,
+    focusSectors: uniqueTop(focusSectors, 3),
+    stageFocus: uniqueTop(stageFocus, 3),
+    investmentFocus: uniqueTop(investmentFocus, 3),
+    formSignal,
+    confidenceBoost: bounded(confidenceBoost, 0, 0.35),
+    sources: uniqueTop(sources, 10),
+    summary: uniqueTop(summary, 6)
+  };
+}
+
 function computeQualificationScore(profile: CompanyProfile, sectors: string[], stageFocus: string[], investmentFocus: string[]): number {
   const profileText = `${profile.oneLiner} ${profile.longDescription} ${profile.fundraising.round}`.toLowerCase();
   const sectorHits = sectors.filter((sector) => profileText.includes(sector.toLowerCase().replace(/\s+/g, ""))).length;
@@ -408,22 +744,48 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
   const pages = await crawlWebsite(firm.website);
   const mergedText = pages.map((page) => page.text).join(" ").slice(0, 220_000);
 
-  const geography = inferGeography(mergedText, firm.website, firm.geography);
-  const investorType = inferInvestorType(mergedText, firm.investorType);
-  const focusSectors = inferFocusSectors(mergedText, firm.focusSectors ?? []);
-  const stageFocus = inferStageFocus(mergedText, firm.stageFocus ?? []);
-  const investmentFocus = inferInvestmentFocus(geography, mergedText);
-  const checkSizeRange = inferCheckSizeRange(mergedText, firm.checkSizeRange);
-  const formSignal = selectFormRoute(pages);
+  const baseGeography = inferGeography(mergedText, firm.website, firm.geography);
+  const baseInvestorType = inferInvestorType(mergedText, firm.investorType);
+  const baseFocusSectors = inferFocusSectors(mergedText, firm.focusSectors ?? []);
+  const baseStageFocus = inferStageFocus(mergedText, firm.stageFocus ?? []);
+  const baseInvestmentFocus = inferInvestmentFocus(baseGeography, mergedText);
+  const baseCheckSizeRange = inferCheckSizeRange(mergedText, firm.checkSizeRange);
+  const baseFormSignal = selectFormRoute(pages);
 
-  const qualificationScore = computeQualificationScore(profile, focusSectors, stageFocus, investmentFocus);
+  const externalHints = (
+    await Promise.all([
+      fetchOpenVcHints(firm),
+      fetchWikidataHints(firm),
+      fetchOpenCorporatesHints(firm)
+    ])
+  ).filter((item): item is ExternalHints => Boolean(item));
+
+  const merged = mergeExternalHints(
+    {
+      geography: baseGeography,
+      investorType: baseInvestorType,
+      checkSizeRange: baseCheckSizeRange,
+      focusSectors: baseFocusSectors,
+      stageFocus: baseStageFocus,
+      investmentFocus: baseInvestmentFocus,
+      formSignal: baseFormSignal
+    },
+    externalHints
+  );
+
+  const qualificationScore = computeQualificationScore(profile, merged.focusSectors, merged.stageFocus, merged.investmentFocus);
   const qualified = qualificationScore >= 0.55;
   let nextStage: PipelineStage = qualified ? "qualified" : "researching";
-  if (qualified && formSignal.status === "discovered") {
+  if (qualified && merged.formSignal.status === "discovered") {
     nextStage = "form_discovered";
   }
 
-  const confidence = bounded(0.45 + Math.min(0.4, pages.length * 0.07) + (formSignal.status === "discovered" ? 0.08 : 0));
+  const confidence = bounded(
+    0.42 +
+      Math.min(0.35, pages.length * 0.07) +
+      (merged.formSignal.status === "discovered" ? 0.08 : 0) +
+      merged.confidenceBoost
+  );
   const statusReason =
     nextStage === "form_discovered"
       ? "Qualified fit and form route discovered."
@@ -431,20 +793,35 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
         ? "Researched and qualified by funding profile fit."
         : "Researched but below qualification threshold.";
 
+  const sourceLinks = uniqueTop(
+    [...pages.map((page) => page.url), ...merged.sources],
+    10
+  );
+  const summaryBits = [
+    ...merged.summary,
+    buildResearchSummary(
+      merged.geography,
+      merged.focusSectors,
+      merged.stageFocus,
+      merged.investmentFocus,
+      merged.formSignal.status
+    )
+  ];
+
   return {
-    geography,
-    investorType,
-    checkSizeRange,
-    focusSectors,
-    stageFocus,
-    investmentFocus,
+    geography: merged.geography,
+    investorType: merged.investorType,
+    checkSizeRange: merged.checkSizeRange,
+    focusSectors: merged.focusSectors,
+    stageFocus: merged.stageFocus,
+    investmentFocus: merged.investmentFocus,
     qualificationScore,
     researchConfidence: Number(confidence.toFixed(3)),
-    formDiscovery: formSignal.status,
-    formRouteHint: formSignal.hint,
+    formDiscovery: merged.formSignal.status,
+    formRouteHint: merged.formSignal.hint,
     nextStage,
     statusReason,
-    researchSources: uniqueTop(pages.map((page) => page.url), 8),
-    researchSummary: buildResearchSummary(geography, focusSectors, stageFocus, investmentFocus, formSignal.status)
+    researchSources: sourceLinks,
+    researchSummary: uniqueTop(summaryBits, 8).join(" | ")
   };
 }
