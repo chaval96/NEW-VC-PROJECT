@@ -454,14 +454,27 @@ async function runWorkspaceMaintenance(workspaceId: string): Promise<{ removedDu
   };
 }
 
-const researchBatchSize = Math.max(10, Number(process.env.RESEARCH_BATCH_SIZE ?? 40));
-const researchIntervalMs = Math.max(15_000, Number(process.env.RESEARCH_INTERVAL_SECONDS ?? 25) * 1000);
+const researchBatchSize = Math.max(3, Number(process.env.RESEARCH_BATCH_SIZE ?? 8));
+const researchIntervalMs = Math.max(15_000, Number(process.env.RESEARCH_INTERVAL_SECONDS ?? 20) * 1000);
 const researchMaxLeadAgeMs = Math.max(6, Number(process.env.RESEARCH_REFRESH_HOURS ?? 72)) * 60 * 60 * 1000;
 const researchInFlight = new Set<string>();
 let researchWatchdogActive = false;
 
+function needsResearchBackfill(firm: Firm): boolean {
+  const geoUnknown = !firm.geography || firm.geography.trim().toLowerCase() === "unknown";
+  const checkUnknown = !firm.checkSizeRange || firm.checkSizeRange.trim().toLowerCase() === "unknown";
+  const sectorsGeneric =
+    !Array.isArray(firm.focusSectors) ||
+    firm.focusSectors.length === 0 ||
+    firm.focusSectors.every((sector) => ["general", "generalist"].includes(sector.trim().toLowerCase()));
+  const missingInvestmentFocus = !firm.investmentFocus || firm.investmentFocus.length === 0;
+  const missingResearch = !firm.qualificationScore || !firm.researchConfidence;
+  return geoUnknown || checkUnknown || sectorsGeneric || missingInvestmentFocus || missingResearch;
+}
+
 function eligibleForResearch(firm: Firm): boolean {
   if (["form_filled", "submitted", "won", "lost"].includes(firm.stage)) return false;
+  if (needsResearchBackfill(firm)) return true;
   if (!firm.researchedAt) return true;
   const researchedAt = Date.parse(firm.researchedAt);
   if (!Number.isFinite(researchedAt)) return true;
@@ -469,6 +482,7 @@ function eligibleForResearch(firm: Firm): boolean {
 }
 
 async function runWorkspaceResearch(workspace: Workspace): Promise<number> {
+  const runId = `system-research-${workspace.id}`;
   const candidates = store
     .listFirms(workspace.id)
     .filter(eligibleForResearch)
@@ -482,72 +496,9 @@ async function runWorkspaceResearch(workspace: Workspace): Promise<number> {
   if (candidates.length === 0) return 0;
 
   let processed = 0;
-  const runId = `system-research-${workspace.id}`;
-
   for (const candidate of candidates) {
-    const current = store.getFirm(candidate.id, workspace.id);
-    if (!current) continue;
-    const now = new Date().toISOString();
-
-    if (current.stage === "lead") {
-      store.upsertFirm({
-        ...current,
-        stage: "researching",
-        statusReason: "Background research started.",
-        lastTouchedAt: now
-      });
-    }
-
-    try {
-      const result = await researchLead(current, workspace.profile);
-      const refreshed = store.getFirm(candidate.id, workspace.id) ?? current;
-      const notes = mergeUniqueText(
-        [
-          ...(refreshed.notes ?? []),
-          `Research score ${Math.round(result.qualificationScore * 100)}% · ${result.statusReason}`
-        ],
-        24
-      );
-
-      store.upsertFirm({
-        ...refreshed,
-        geography: result.geography,
-        investorType: result.investorType,
-        checkSizeRange: result.checkSizeRange,
-        focusSectors: result.focusSectors,
-        stageFocus: result.stageFocus,
-        investmentFocus: result.investmentFocus,
-        qualificationScore: result.qualificationScore,
-        researchConfidence: result.researchConfidence,
-        researchedAt: now,
-        formDiscovery: result.formDiscovery,
-        stage: result.nextStage,
-        statusReason: result.formRouteHint ? `${result.statusReason} (${result.formRouteHint})` : result.statusReason,
-        lastTouchedAt: now,
-        notes
-      });
-
-      store.addLog({
-        id: uuid(),
-        workspaceId: workspace.id,
-        runId,
-        timestamp: now,
-        level: "info",
-        message: `Research update for ${refreshed.name}: ${result.statusReason}`,
-        firmId: refreshed.id
-      });
-      processed += 1;
-    } catch (error) {
-      store.addLog({
-        id: uuid(),
-        workspaceId: workspace.id,
-        runId,
-        timestamp: now,
-        level: "warn",
-        message: `Research failed for ${current.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
-        firmId: current.id
-      });
-    }
+    const ok = await runFirmResearch(workspace, candidate.id, runId, "Background research started.");
+    if (ok) processed += 1;
   }
 
   if (processed > 0) {
@@ -555,6 +506,80 @@ async function runWorkspaceResearch(workspace: Workspace): Promise<number> {
   }
 
   return processed;
+}
+
+async function runFirmResearch(
+  workspace: Workspace,
+  firmId: string,
+  runId: string,
+  startupReason: string
+): Promise<boolean> {
+  const current = store.getFirm(firmId, workspace.id);
+  if (!current) return false;
+  const now = new Date().toISOString();
+
+  if (current.stage === "lead") {
+    store.upsertFirm({
+      ...current,
+      stage: "researching",
+      statusReason: startupReason,
+      lastTouchedAt: now
+    });
+  }
+
+  try {
+    const result = await researchLead(current, workspace.profile);
+    const refreshed = store.getFirm(firmId, workspace.id) ?? current;
+    const notes = mergeUniqueText(
+      [
+        ...(refreshed.notes ?? []),
+        `Research score ${Math.round(result.qualificationScore * 100)}% · ${result.statusReason}`
+      ],
+      24
+    );
+
+    store.upsertFirm({
+      ...refreshed,
+      geography: result.geography,
+      investorType: result.investorType,
+      checkSizeRange: result.checkSizeRange,
+      focusSectors: result.focusSectors,
+      stageFocus: result.stageFocus,
+      investmentFocus: result.investmentFocus,
+      qualificationScore: result.qualificationScore,
+      researchConfidence: result.researchConfidence,
+      researchedAt: now,
+      formDiscovery: result.formDiscovery,
+      researchSources: result.researchSources,
+      researchSummary: result.researchSummary,
+      stage: result.nextStage,
+      statusReason: result.formRouteHint ? `${result.statusReason} (${result.formRouteHint})` : result.statusReason,
+      lastTouchedAt: now,
+      notes
+    });
+
+    store.addLog({
+      id: uuid(),
+      workspaceId: workspace.id,
+      runId,
+      timestamp: now,
+      level: "info",
+      message: `Research update for ${refreshed.name}: ${result.statusReason}`,
+      firmId: refreshed.id
+    });
+    return true;
+  } catch (error) {
+    store.addLog({
+      id: uuid(),
+      workspaceId: workspace.id,
+      runId,
+      timestamp: now,
+      level: "warn",
+      message: `Research failed for ${current.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      firmId: current.id
+    });
+    return false;
+  }
 }
 
 async function runResearchWatchdog(): Promise<void> {
@@ -1701,6 +1726,78 @@ app.get(
       .slice(0, 80);
 
     res.json({ firm, events, submissionRequests, logs });
+  })
+);
+
+app.post(
+  "/api/firms/:id/research",
+  asyncHandler(async (req, res) => {
+    const { workspaceId, workspace } = await resolveWorkspaceContext(req, res);
+    const firm = store.getFirm(req.params.id, workspaceId);
+    if (!firm) {
+      res.status(404).json({ message: "Firm not found" });
+      return;
+    }
+
+    const runId = `manual-research-${workspaceId}`;
+    const ok = await runFirmResearch(workspace, firm.id, runId, "Manual research refresh started.");
+    await store.persist();
+
+    if (!ok) {
+      res.status(500).json({ message: "Research failed. Check logs and try again." });
+      return;
+    }
+
+    const updated = store.getFirm(firm.id, workspaceId) ?? firm;
+    res.json({ ok: true, firm: updated });
+  })
+);
+
+const queueResearchSchema = z.object({
+  firmIds: z.array(z.string().min(1)).max(800).optional(),
+  listNames: z.array(z.string().min(1)).max(200).optional(),
+  limit: z.number().int().min(1).max(1200).optional()
+});
+
+app.post(
+  "/api/research/run",
+  asyncHandler(async (req, res) => {
+    const parsed = queueResearchSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const now = new Date().toISOString();
+    const limit = parsed.data.limit ?? 300;
+    const idFilter = parsed.data.firmIds ? new Set(parsed.data.firmIds) : undefined;
+    const listFilter = parsed.data.listNames
+      ? new Set(parsed.data.listNames.map((name) => normalizeListKey(name)))
+      : undefined;
+
+    let queued = 0;
+    for (const firm of store.listFirms(workspaceId)) {
+      if (queued >= limit) break;
+      if (idFilter && !idFilter.has(firm.id)) continue;
+      if (listFilter && !listFilter.has(normalizeListKey(firm.sourceListName))) continue;
+
+      store.upsertFirm({
+        ...firm,
+        researchedAt: undefined,
+        statusReason: "Queued for research refresh.",
+        stage: ["lead", "researching", "qualified", "form_discovered"].includes(firm.stage) ? "lead" : firm.stage,
+        lastTouchedAt: now
+      });
+      queued += 1;
+    }
+
+    if (queued > 0) {
+      await store.persist();
+      void runResearchWatchdog();
+    }
+
+    res.json({ ok: true, queued });
   })
 );
 

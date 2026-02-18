@@ -68,6 +68,8 @@ export interface Firm {
   researchedAt?: string;
   formDiscovery?: "discovered" | "not_found" | "unknown";
   qualificationScore?: number;
+  researchSources?: string[];
+  researchSummary?: string;
 }
 
 export interface SubmissionEvent {

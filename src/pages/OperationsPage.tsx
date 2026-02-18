@@ -16,6 +16,7 @@ import {
   getSubmissionQueue,
   importFirmsFile,
   importFirmsFromDrive,
+  queueResearchRun,
   renameLeadList
 } from "../api";
 import { Button } from "../components/ui/Button";
@@ -71,6 +72,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   const [running, setRunning] = useState(false);
   const [exportingFirms, setExportingFirms] = useState(false);
   const [exportingSubmissions, setExportingSubmissions] = useState(false);
+  const [queueingResearch, setQueueingResearch] = useState(false);
 
   const [driveLink, setDriveLink] = useState("");
   const [listName, setListName] = useState("");
@@ -394,6 +396,30 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
     }
   };
 
+  const onQueueResearch = async (): Promise<void> => {
+    if (!workspaceId) return;
+    setQueueingResearch(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const payload =
+        selectedListNames.length > 0
+          ? { listNames: selectedListNames, limit: 1200 }
+          : { limit: Math.max(300, firms.length) };
+      const result = await queueResearchRun(workspaceId, payload);
+      setNotice(
+        result.queued > 0
+          ? `${result.queued} leads queued for deep enrichment. Refresh in 1-3 minutes to see updates.`
+          : "No leads were queued. Try selecting a list first."
+      );
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not queue research.");
+    } finally {
+      setQueueingResearch(false);
+    }
+  };
+
   const toggleListSelection = (name: string): void => {
     setSelectedListNames((prev) => (prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name]));
   };
@@ -470,6 +496,9 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="secondary" onClick={() => void refresh()}>Refresh</Button>
+          <Button size="sm" variant="secondary" onClick={() => void onQueueResearch()} disabled={queueingResearch}>
+            {queueingResearch ? "Queueing..." : "Run Enrichment"}
+          </Button>
           <Button size="sm" variant="secondary" onClick={() => void onExportFirms()} disabled={exportingFirms}>
             {exportingFirms ? "Exporting..." : "Export Leads"}
           </Button>
@@ -834,6 +863,8 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                 <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left">
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Company</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Source List</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Geo</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Focus</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Stage</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Status Reason</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Last Updated</th>
@@ -848,6 +879,8 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                       <div className="text-xs text-slate-500">{firm.website}</div>
                     </td>
                     <td className="px-4 py-2 text-xs text-slate-600">{firm.sourceListName ?? "Unassigned"}</td>
+                    <td className="px-4 py-2 text-xs text-slate-600">{firm.geography ?? "Unknown"}</td>
+                    <td className="px-4 py-2 text-xs text-slate-600">{(firm.focusSectors ?? []).slice(0, 2).join(", ") || "-"}</td>
                     <td className="px-4 py-2"><StatusPill status={firm.stage} /></td>
                     <td className="px-4 py-2 text-xs text-slate-600 max-w-[320px] truncate">{firm.statusReason}</td>
                     <td className="px-4 py-2 text-xs text-slate-500">{firm.lastTouchedAt ? dayjs(firm.lastTouchedAt).format("MMM D, YYYY") : "-"}</td>
@@ -860,7 +893,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                 ))}
                 {leadResults.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-slate-400">No leads found for current filters.</td>
+                    <td colSpan={8} className="px-4 py-8 text-center text-slate-400">No leads found for current filters.</td>
                   </tr>
                 ) : null}
               </tbody>

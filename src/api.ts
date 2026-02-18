@@ -328,6 +328,26 @@ export function getFirmDetail(workspaceId: string, firmId: string): Promise<Firm
   return api<FirmDetail>(withWorkspace(`/api/firms/${firmId}`, workspaceId));
 }
 
+export function runLeadResearch(workspaceId: string, firmId: string): Promise<{ ok: true; firm: Firm }> {
+  return api<{ ok: true; firm: Firm }>(withWorkspace(`/api/firms/${firmId}/research`, workspaceId), {
+    method: "POST"
+  });
+}
+
+export function queueResearchRun(
+  workspaceId: string,
+  payload: {
+    firmIds?: string[];
+    listNames?: string[];
+    limit?: number;
+  }
+): Promise<{ ok: true; queued: number }> {
+  return api<{ ok: true; queued: number }>(withWorkspace("/api/research/run", workspaceId), {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function getSubmissionDetail(workspaceId: string, requestId: string): Promise<SubmissionDetail> {
   return api<SubmissionDetail>(withWorkspace(`/api/submissions/${requestId}`, workspaceId));
 }

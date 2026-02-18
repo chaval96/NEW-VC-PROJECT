@@ -1,7 +1,7 @@
 import dayjs from "dayjs";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { activateWorkspace, getFirmDetail } from "../api";
+import { activateWorkspace, getFirmDetail, runLeadResearch } from "../api";
 import { Button } from "../components/ui/Button";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { StatusPill } from "../components/ui/StatusPill";
@@ -13,6 +13,7 @@ export function LeadDetailPage(): JSX.Element {
   const [detail, setDetail] = useState<FirmDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [researching, setResearching] = useState(false);
 
   useEffect(() => {
     if (!workspaceId || !firmId) {
@@ -55,6 +56,27 @@ export function LeadDetailPage(): JSX.Element {
           <p className="mt-1 text-sm text-slate-500">{detail.firm.website}</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={async () => {
+              if (!workspaceId || !firmId) return;
+              setResearching(true);
+              setError(undefined);
+              try {
+                await runLeadResearch(workspaceId, firmId);
+                const result = await getFirmDetail(workspaceId, firmId);
+                setDetail(result);
+              } catch (err) {
+                setError(err instanceof Error ? err.message : "Research refresh failed.");
+              } finally {
+                setResearching(false);
+              }
+            }}
+            disabled={researching}
+          >
+            {researching ? "Refreshing..." : "Refresh Research"}
+          </Button>
           <Button size="sm" variant="secondary" onClick={() => navigate(`/projects/${workspaceId}/operations`)}>
             Back to Operations
           </Button>
@@ -127,6 +149,25 @@ export function LeadDetailPage(): JSX.Element {
           </CardBody>
         </Card>
       </div>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <h2 className="text-sm font-semibold">Research Summary</h2>
+        </CardHeader>
+        <CardBody>
+          <p className="text-sm text-slate-700">{detail.firm.researchSummary ?? "No research summary yet."}</p>
+          {(detail.firm.researchSources ?? []).length > 0 ? (
+            <div className="mt-3 space-y-1">
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sources</div>
+              {(detail.firm.researchSources ?? []).slice(0, 8).map((source) => (
+                <a key={source} href={source} target="_blank" rel="noreferrer" className="block truncate text-xs text-primary-700 hover:underline">
+                  {source}
+                </a>
+              ))}
+            </div>
+          ) : null}
+        </CardBody>
+      </Card>
 
       <Card className="mb-6">
         <CardHeader>
