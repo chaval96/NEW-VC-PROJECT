@@ -128,6 +128,14 @@ export interface ImportBatch {
   runId?: string;
 }
 
+export interface LeadListSummary {
+  name: string;
+  leadCount: number;
+  createdAt: string;
+  updatedAt: string;
+  importBatchCount: number;
+}
+
 export interface AgentTaskResult {
   id: string;
   workspaceId: string;

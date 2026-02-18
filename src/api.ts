@@ -8,6 +8,7 @@ import type {
   Firm,
   FirmDetail,
   ImportBatch,
+  LeadListSummary,
   OverviewResponse,
   Profile,
   RunDetail,
@@ -196,8 +197,24 @@ export function getOverview(workspaceId: string): Promise<OverviewResponse> {
 }
 
 export async function getFirms(workspaceId: string): Promise<Firm[]> {
-  const result = await api<Firm[] | { firms: Firm[]; total: number }>(withWorkspace("/api/firms?limit=200", workspaceId));
-  return Array.isArray(result) ? result : result.firms;
+  const pageSize = 200;
+  let page = 1;
+  let total = 0;
+  const firms: Firm[] = [];
+
+  do {
+    const result = await api<Firm[] | { firms: Firm[]; total: number }>(
+      withWorkspace(`/api/firms?page=${page}&limit=${pageSize}`, workspaceId)
+    );
+    if (Array.isArray(result)) {
+      return result;
+    }
+    firms.push(...result.firms);
+    total = result.total;
+    page += 1;
+  } while (firms.length < total);
+
+  return firms;
 }
 
 export function getProfile(workspaceId: string): Promise<Profile> {
@@ -208,15 +225,35 @@ export function getImportBatches(workspaceId: string): Promise<ImportBatch[]> {
   return api<ImportBatch[]>(withWorkspace("/api/imports", workspaceId));
 }
 
+export function getLeadLists(workspaceId: string): Promise<LeadListSummary[]> {
+  return api<LeadListSummary[]>(withWorkspace("/api/lists", workspaceId));
+}
+
 export function importFirmsFile(payload: {
   workspaceId: string;
   fileName: string;
   mimeType: string;
   base64Data: string;
   listName?: string;
-}): Promise<{ imported: number; sourceType: string; runId?: string; listName?: string; batchId?: string }> {
+}): Promise<{
+  imported: number;
+  sourceType: string;
+  runId?: string;
+  listName?: string;
+  batchId?: string;
+  skippedDuplicates?: number;
+  totalParsed?: number;
+}> {
   const { workspaceId, ...rest } = payload;
-  return api<{ imported: number; sourceType: string; runId?: string; listName?: string; batchId?: string }>(
+  return api<{
+    imported: number;
+    sourceType: string;
+    runId?: string;
+    listName?: string;
+    batchId?: string;
+    skippedDuplicates?: number;
+    totalParsed?: number;
+  }>(
     withWorkspace("/api/firms/import-file", workspaceId),
     {
       method: "POST",
@@ -229,8 +266,24 @@ export function importFirmsFromDrive(
   workspaceId: string,
   link: string,
   listName?: string
-): Promise<{ imported: number; sourceType: string; runId?: string; listName?: string; batchId?: string }> {
-  return api<{ imported: number; sourceType: string; runId?: string; listName?: string; batchId?: string }>(
+): Promise<{
+  imported: number;
+  sourceType: string;
+  runId?: string;
+  listName?: string;
+  batchId?: string;
+  skippedDuplicates?: number;
+  totalParsed?: number;
+}> {
+  return api<{
+    imported: number;
+    sourceType: string;
+    runId?: string;
+    listName?: string;
+    batchId?: string;
+    skippedDuplicates?: number;
+    totalParsed?: number;
+  }>(
     withWorkspace("/api/firms/import-drive", workspaceId),
     {
       method: "POST",

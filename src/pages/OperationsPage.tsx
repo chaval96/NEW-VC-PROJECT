@@ -10,7 +10,7 @@ import {
   exportFirmsCsv,
   exportSubmissionsCsv,
   getFirms,
-  getImportBatches,
+  getLeadLists,
   getRuns,
   getSubmissionQueue,
   importFirmsFile,
@@ -21,7 +21,7 @@ import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Input, Select } from "../components/ui/Input";
 import { StatusPill } from "../components/ui/StatusPill";
 import type { AuthUser } from "../types";
-import type { CampaignRun, Firm, ImportBatch, SubmissionRequest } from "@shared/types";
+import type { CampaignRun, Firm, LeadListSummary, SubmissionRequest } from "@shared/types";
 
 interface OperationsPageProps {
   user: AuthUser;
@@ -57,7 +57,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
 
   const [firms, setFirms] = useState<Firm[]>([]);
   const [queue, setQueue] = useState<SubmissionRequest[]>([]);
-  const [imports, setImports] = useState<ImportBatch[]>([]);
+  const [lists, setLists] = useState<LeadListSummary[]>([]);
   const [runs, setRuns] = useState<CampaignRun[]>([]);
 
   const [loading, setLoading] = useState(true);
@@ -81,21 +81,23 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
 
   const [leadQuery, setLeadQuery] = useState("");
   const [leadStageFilter, setLeadStageFilter] = useState<string>("all");
-  const [leadListFilter, setLeadListFilter] = useState<string>("all");
+  const [listSearch, setListSearch] = useState("");
+  const [selectedListNames, setSelectedListNames] = useState<string[]>([]);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const refresh = useCallback(async () => {
     if (!workspaceId) return;
     setError(undefined);
-    const [allFirms, submissions, importBatches, runItems] = await Promise.all([
+    const [allFirms, submissions, leadLists, runItems] = await Promise.all([
       getFirms(workspaceId),
       getSubmissionQueue(workspaceId),
-      getImportBatches(workspaceId),
+      getLeadLists(workspaceId),
       getRuns(workspaceId)
     ]);
     setFirms(allFirms);
     setQueue(submissions);
-    setImports(importBatches);
+    setLists(leadLists);
     setRuns(runItems);
   }, [workspaceId]);
 
@@ -129,10 +131,12 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   }, [queue, statusFilter, query]);
 
   const preview = useMemo(() => queue.find((item) => item.id === previewId), [queue, previewId]);
-  const completedImports = useMemo(() => imports.filter((entry) => entry.status === "completed"), [imports]);
-  const failedImports = useMemo(() => imports.filter((entry) => entry.status === "failed"), [imports]);
   const runningRuns = useMemo(() => runs.filter((run) => run.status === "running").sort((a, b) => (a.startedAt > b.startedAt ? -1 : 1)), [runs]);
-  const availableLists = useMemo(() => [...new Set(completedImports.map((entry) => entry.sourceName))], [completedImports]);
+
+  const filteredLists = useMemo(() => {
+    const q = listSearch.trim().toLowerCase();
+    return lists.filter((list) => q.length === 0 || list.name.toLowerCase().includes(q));
+  }, [lists, listSearch]);
 
   const leadResults = useMemo(() => {
     const q = leadQuery.trim().toLowerCase();
@@ -140,11 +144,11 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
       .filter((firm) => {
         const qOk = q.length === 0 || firm.name.toLowerCase().includes(q) || firm.website.toLowerCase().includes(q);
         const stageOk = leadStageFilter === "all" || firm.stage === leadStageFilter;
-        const listOk = leadListFilter === "all" || firm.sourceListName === leadListFilter;
+        const listOk = selectedListNames.length === 0 || selectedListNames.includes(firm.sourceListName ?? "Unassigned");
         return qOk && stageOk && listOk;
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [firms, leadQuery, leadStageFilter, leadListFilter]);
+  }, [firms, leadQuery, leadStageFilter, selectedListNames]);
 
   const queueSummary = useMemo(
     () => ({
@@ -194,7 +198,14 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
         base64Data,
         listName: listName.trim() || undefined
       });
-      setNotice(`Imported ${result.imported} investors into list '${result.listName ?? (listName || file.name)}'.`);
+
+      const skipped = result.skippedDuplicates ?? 0;
+      const totalParsed = result.totalParsed ?? result.imported;
+      setNotice(
+        skipped > 0
+          ? `Imported ${result.imported} leads to '${result.listName ?? (listName || file.name)}'. ${skipped} were already in your workspace (parsed: ${totalParsed}).`
+          : `Imported ${result.imported} leads to '${result.listName ?? (listName || file.name)}'.`
+      );
       setListName("");
       await refresh();
     } catch (err) {
@@ -218,7 +229,13 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
     setImportingDrive(true);
     try {
       const result = await importFirmsFromDrive(workspaceId, driveLink.trim(), listName.trim() || undefined);
-      setNotice(`Imported ${result.imported} investors into list '${result.listName ?? (listName || "Google Drive list")}'.`);
+      const skipped = result.skippedDuplicates ?? 0;
+      const totalParsed = result.totalParsed ?? result.imported;
+      setNotice(
+        skipped > 0
+          ? `Imported ${result.imported} leads to '${result.listName ?? (listName || "Drive list")}'. ${skipped} were already in your workspace (parsed: ${totalParsed}).`
+          : `Imported ${result.imported} leads to '${result.listName ?? (listName || "Drive list")}'.`
+      );
       setDriveLink("");
       setListName("");
       await refresh();
@@ -372,6 +389,10 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
     }
   };
 
+  const toggleListSelection = (name: string): void => {
+    setSelectedListNames((prev) => (prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name]));
+  };
+
   if (loading) {
     return <div className="mx-auto max-w-7xl px-6 py-8" />;
   }
@@ -399,7 +420,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
 
       <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-5">
         <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Leads</div><div className="mt-1 text-2xl font-bold text-slate-800">{firms.length}</div></div>
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Lists</div><div className="mt-1 text-2xl font-bold text-slate-800">{availableLists.length}</div></div>
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Lists</div><div className="mt-1 text-2xl font-bold text-slate-800">{lists.length}</div></div>
         <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Pending approvals</div><div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.pendingApproval}</div></div>
         <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Retry queue</div><div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.pendingRetry}</div></div>
         <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-xs text-slate-500">Failed</div><div className="mt-1 text-2xl font-bold text-slate-800">{queueSummary.failed}</div></div>
@@ -438,29 +459,6 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
               <Button variant="secondary" onClick={() => void onDriveImport()} disabled={importingDrive}>
                 {importingDrive ? "Importing..." : "Import from Drive"}
               </Button>
-            </div>
-
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Completed Imports</p>
-              <div className="flex max-h-24 flex-wrap gap-2 overflow-auto">
-                {completedImports.slice(0, 24).map((entry) => (
-                  <button
-                    type="button"
-                    key={entry.id}
-                    onClick={() => setLeadListFilter(entry.sourceName)}
-                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
-                    title="Filter lead explorer by this list"
-                  >
-                    {entry.sourceName.length > 34 ? `${entry.sourceName.slice(0, 34)}...` : entry.sourceName} ({entry.importedCount})
-                  </button>
-                ))}
-                {completedImports.length === 0 ? <span className="text-xs text-slate-400">No completed imports yet.</span> : null}
-              </div>
-              {failedImports.length > 0 ? (
-                <p className="text-xs text-red-600">
-                  Failed imports: {failedImports.slice(0, 3).map((entry) => entry.sourceName).join(" | ")}
-                </p>
-              ) : null}
             </div>
           </CardBody>
         </Card>
@@ -511,6 +509,49 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
           </CardBody>
         </Card>
       </div>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold">My Lists</h2>
+            <Input className="max-w-xs" placeholder="Search lists" value={listSearch} onChange={(event) => setListSearch(event.target.value)} />
+          </div>
+        </CardHeader>
+        <CardBody className="p-0">
+          <div className="max-h-[300px] overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left">
+                  <th className="px-4 py-2" />
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">List Name</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500"># of Leads</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Last Modified</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredLists.map((list) => {
+                  const selected = selectedListNames.includes(list.name);
+                  return (
+                    <tr key={list.name} className={selected ? "border-b border-primary-100 bg-primary-50/40" : "border-b border-slate-50 hover:bg-slate-50"}>
+                      <td className="px-4 py-2">
+                        <input type="checkbox" checked={selected} onChange={() => toggleListSelection(list.name)} />
+                      </td>
+                      <td className="px-4 py-2 font-medium text-slate-800">{list.name}</td>
+                      <td className="px-4 py-2 text-slate-700">{list.leadCount}</td>
+                      <td className="px-4 py-2 text-xs text-slate-500">{dayjs(list.updatedAt).format("MMM D, YYYY HH:mm")}</td>
+                    </tr>
+                  );
+                })}
+                {filteredLists.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-6 text-center text-slate-400">No lists found.</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </CardBody>
+      </Card>
 
       <div className="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-[1fr_340px]">
         <Card>
@@ -656,14 +697,8 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
             <h2 className="text-sm font-semibold">Lead Explorer ({leadResults.length})</h2>
             <div className="text-xs text-slate-500">Search any imported company and open its timeline/logs</div>
           </div>
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
             <Input placeholder="Search by company or website" value={leadQuery} onChange={(event) => setLeadQuery(event.target.value)} />
-            <Select value={leadListFilter} onChange={(event) => setLeadListFilter(event.target.value)}>
-              <option value="all">All lists</option>
-              {availableLists.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </Select>
             <Select value={leadStageFilter} onChange={(event) => setLeadStageFilter(event.target.value)}>
               <option value="all">All stages</option>
               {[
@@ -681,6 +716,9 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
               ))}
             </Select>
           </div>
+          {selectedListNames.length > 0 ? (
+            <div className="mt-3 text-xs text-slate-500">Filtering by lists: {selectedListNames.join(" | ")}</div>
+          ) : null}
         </CardHeader>
         <CardBody className="p-0">
           <div className="max-h-[520px] overflow-auto">
@@ -702,7 +740,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                       <div className="font-medium text-slate-800">{firm.name}</div>
                       <div className="text-xs text-slate-500">{firm.website}</div>
                     </td>
-                    <td className="px-4 py-2 text-xs text-slate-600">{firm.sourceListName ?? "-"}</td>
+                    <td className="px-4 py-2 text-xs text-slate-600">{firm.sourceListName ?? "Unassigned"}</td>
                     <td className="px-4 py-2"><StatusPill status={firm.stage} /></td>
                     <td className="px-4 py-2 text-xs text-slate-600 max-w-[320px] truncate">{firm.statusReason}</td>
                     <td className="px-4 py-2 text-xs text-slate-500">{firm.lastTouchedAt ? dayjs(firm.lastTouchedAt).format("MMM D, YYYY") : "-"}</td>

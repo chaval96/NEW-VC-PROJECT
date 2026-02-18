@@ -2,6 +2,7 @@ import cors from "cors";
 import dayjs from "dayjs";
 import express from "express";
 import path from "node:path";
+import { URL } from "node:url";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { StateStore } from "./domain/store.js";
@@ -157,6 +158,78 @@ function toCsv(columns: string[], rows: Array<Record<string, unknown>>): string 
 
 function safeFilePart(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "export";
+}
+
+function baseNameFromFile(fileName: string): string {
+  const trimmed = fileName.trim();
+  const withoutPath = trimmed.split("/").pop() ?? trimmed;
+  const withoutQuery = withoutPath.split("?")[0] ?? withoutPath;
+  const parts = withoutQuery.split(".");
+  if (parts.length <= 1) return withoutQuery || "Imported List";
+  return parts.slice(0, -1).join(".") || withoutQuery || "Imported List";
+}
+
+function normalizeFirmIdentity(name: string, website: string): string {
+  const normalizedName = name.trim().toLowerCase();
+  const normalizedWebsite = website.trim().toLowerCase();
+  try {
+    const parsed = new URL(normalizedWebsite.startsWith("http") ? normalizedWebsite : `https://${normalizedWebsite}`);
+    const host = parsed.hostname.replace(/^www\./, "");
+    const pathPart = parsed.pathname.replace(/\/+$/, "");
+    return `${host}${pathPart ? pathPart : ""}`;
+  } catch {
+    return `${normalizedName}::${normalizedWebsite}`;
+  }
+}
+
+function summarizeLeadLists(
+  firms: ReturnType<StateStore["listFirms"]>,
+  batches: ReturnType<StateStore["listImportBatches"]>
+): Array<{
+  name: string;
+  leadCount: number;
+  createdAt: string;
+  updatedAt: string;
+  importBatchCount: number;
+}> {
+  const batchGrouped = new Map<string, { createdAt: string; updatedAt: string; importBatchCount: number }>();
+
+  for (const batch of batches) {
+    const key = batch.sourceName;
+    const existing = batchGrouped.get(key);
+    if (!existing) {
+      batchGrouped.set(key, {
+        createdAt: batch.importedAt,
+        updatedAt: batch.importedAt,
+        importBatchCount: 1
+      });
+      continue;
+    }
+    existing.importBatchCount += 1;
+    if (batch.importedAt < existing.createdAt) existing.createdAt = batch.importedAt;
+    if (batch.importedAt > existing.updatedAt) existing.updatedAt = batch.importedAt;
+  }
+
+  const leadCounts = new Map<string, number>();
+  for (const firm of firms) {
+    const key = firm.sourceListName ?? "Unassigned";
+    leadCounts.set(key, (leadCounts.get(key) ?? 0) + 1);
+  }
+
+  const names = new Set<string>([...leadCounts.keys(), ...batchGrouped.keys()]);
+  return [...names]
+    .map((name) => {
+      const batchInfo = batchGrouped.get(name);
+      const fallbackDate = new Date().toISOString();
+      return {
+        name,
+        leadCount: leadCounts.get(name) ?? 0,
+        createdAt: batchInfo?.createdAt ?? fallbackDate,
+        updatedAt: batchInfo?.updatedAt ?? fallbackDate,
+        importBatchCount: batchInfo?.importBatchCount ?? 0
+      };
+    })
+    .sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : 1));
 }
 
 const submissionMaxAttemptsDefault = Math.max(1, Number(process.env.SUBMISSION_MAX_ATTEMPTS ?? 2));
@@ -873,6 +946,16 @@ app.get(
   })
 );
 
+app.get(
+  "/api/lists",
+  asyncHandler(async (req, res) => {
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const firms = store.listFirms(workspaceId);
+    const batches = store.listImportBatches(workspaceId);
+    res.json(summarizeLeadLists(firms, batches));
+  })
+);
+
 const importFileSchema = z.object({
   fileName: z.string().min(1),
   mimeType: z.string().min(1),
@@ -892,7 +975,28 @@ app.post(
     const { workspaceId } = await resolveWorkspaceContext(req, res);
     const parsedImport = parseFirmsFromUpload(parsed.data.base64Data, parsed.data.fileName, parsed.data.mimeType, workspaceId);
     const batchId = uuid();
-    const listName = parsed.data.listName?.trim() || parsed.data.fileName;
+    const listName = parsed.data.listName?.trim() || baseNameFromFile(parsed.data.fileName);
+    const existing = store.listFirms(workspaceId);
+    const existingKeys = new Set(existing.map((firm) => normalizeFirmIdentity(firm.name, firm.website)));
+
+    let skippedDuplicates = 0;
+    const uniqueInBatch = new Set<string>();
+    const newFirms: typeof parsedImport.firms = [];
+    for (const firm of parsedImport.firms) {
+      const key = normalizeFirmIdentity(firm.name, firm.website);
+      if (existingKeys.has(key) || uniqueInBatch.has(key)) {
+        skippedDuplicates += 1;
+        continue;
+      }
+      uniqueInBatch.add(key);
+      existingKeys.add(key);
+      newFirms.push({
+        ...firm,
+        importBatchId: batchId,
+        sourceListName: listName
+      });
+    }
+
     if (parsedImport.firms.length === 0) {
       store.addImportBatch({
         id: batchId,
@@ -910,13 +1014,31 @@ app.post(
       });
       return;
     }
-
-    for (const firm of parsedImport.firms) {
-      store.upsertFirm({
-        ...firm,
-        importBatchId: batchId,
-        sourceListName: listName
+    if (newFirms.length === 0) {
+      store.addImportBatch({
+        id: batchId,
+        workspaceId,
+        sourceName: listName,
+        sourceType: parsedImport.sourceType,
+        importedCount: 0,
+        importedAt: new Date().toISOString(),
+        status: "completed",
+        note: `All ${parsedImport.firms.length} leads already exist and were skipped.`
       });
+      await store.persist();
+      res.json({
+        imported: 0,
+        sourceType: parsedImport.sourceType,
+        listName,
+        batchId,
+        skippedDuplicates,
+        totalParsed: parsedImport.firms.length
+      });
+      return;
+    }
+
+    for (const firm of newFirms) {
+      store.upsertFirm(firm);
     }
 
     store.addImportBatch({
@@ -924,13 +1046,21 @@ app.post(
       workspaceId,
       sourceName: listName,
       sourceType: parsedImport.sourceType,
-      importedCount: parsedImport.firms.length,
+      importedCount: newFirms.length,
       importedAt: new Date().toISOString(),
-      status: "completed"
+      status: "completed",
+      note: skippedDuplicates > 0 ? `${skippedDuplicates} duplicates skipped.` : undefined
     });
 
     await store.persist();
-    res.json({ imported: parsedImport.firms.length, sourceType: parsedImport.sourceType, listName, batchId });
+    res.json({
+      imported: newFirms.length,
+      sourceType: parsedImport.sourceType,
+      listName,
+      batchId,
+      skippedDuplicates,
+      totalParsed: parsedImport.firms.length
+    });
   })
 );
 
@@ -950,7 +1080,9 @@ app.post(
 
     const { workspaceId } = await resolveWorkspaceContext(req, res);
     const batchId = uuid();
-    const listName = parsed.data.listName?.trim() || parsed.data.link;
+    const listName = parsed.data.listName?.trim() || `Drive List ${dayjs().format("YYYY-MM-DD HH:mm")}`;
+    const existing = store.listFirms(workspaceId);
+    const existingKeys = new Set(existing.map((firm) => normalizeFirmIdentity(firm.name, firm.website)));
 
     try {
       const parsedImport = await parseFirmsFromGoogleDriveLink(parsed.data.link, workspaceId);
@@ -971,12 +1103,49 @@ app.post(
         });
         return;
       }
+      let skippedDuplicates = 0;
+      const uniqueInBatch = new Set<string>();
+      const newFirms: typeof parsedImport.firms = [];
       for (const firm of parsedImport.firms) {
-        store.upsertFirm({
+        const key = normalizeFirmIdentity(firm.name, firm.website);
+        if (existingKeys.has(key) || uniqueInBatch.has(key)) {
+          skippedDuplicates += 1;
+          continue;
+        }
+        uniqueInBatch.add(key);
+        existingKeys.add(key);
+        newFirms.push({
           ...firm,
           importBatchId: batchId,
           sourceListName: listName
         });
+      }
+
+      if (newFirms.length === 0) {
+        store.addImportBatch({
+          id: batchId,
+          workspaceId,
+          sourceName: listName,
+          sourceType: "google_drive",
+          importedCount: 0,
+          importedAt: new Date().toISOString(),
+          status: "completed",
+          note: `All ${parsedImport.firms.length} leads already exist and were skipped.`
+        });
+        await store.persist();
+        res.json({
+          imported: 0,
+          sourceType: "google_drive",
+          listName,
+          batchId,
+          skippedDuplicates,
+          totalParsed: parsedImport.firms.length
+        });
+        return;
+      }
+
+      for (const firm of newFirms) {
+        store.upsertFirm(firm);
       }
 
       store.addImportBatch({
@@ -984,13 +1153,21 @@ app.post(
         workspaceId,
         sourceName: listName,
         sourceType: "google_drive",
-        importedCount: parsedImport.firms.length,
+        importedCount: newFirms.length,
         importedAt: new Date().toISOString(),
-        status: "completed"
+        status: "completed",
+        note: skippedDuplicates > 0 ? `${skippedDuplicates} duplicates skipped.` : undefined
       });
 
       await store.persist();
-      res.json({ imported: parsedImport.firms.length, sourceType: "google_drive", listName, batchId });
+      res.json({
+        imported: newFirms.length,
+        sourceType: "google_drive",
+        listName,
+        batchId,
+        skippedDuplicates,
+        totalParsed: parsedImport.firms.length
+      });
     } catch (error) {
       store.addImportBatch({
         id: batchId,

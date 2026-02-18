@@ -12,6 +12,7 @@ export type {
   FirmDetail,
   FirmContact,
   ImportBatch,
+  LeadListSummary,
   OpsAlert,
   OpsSnapshot,
   InvestorMatch,

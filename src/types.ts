@@ -4,6 +4,7 @@ export type {
   Firm,
   FirmDetail,
   ImportBatch,
+  LeadListSummary,
   OverviewResponse,
   PipelineStage,
   Profile,
