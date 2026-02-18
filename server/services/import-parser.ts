@@ -1,6 +1,7 @@
 import { v4 as uuid } from "uuid";
 import * as XLSX from "xlsx";
 import type { Firm } from "../domain/types.js";
+import { normalizeFirmIdentity } from "./firm-normalization.js";
 
 export interface ParsedImportResult {
   firms: Firm[];
@@ -105,7 +106,7 @@ function mapRowsToFirms(rows: Record<string, string>[], workspaceId: string): Fi
       continue;
     }
 
-    const dedupeKey = `${name.toLowerCase()}::${website.toLowerCase()}`;
+    const dedupeKey = normalizeFirmIdentity(name, website);
     if (seen.has(dedupeKey)) {
       continue;
     }

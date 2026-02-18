@@ -2,17 +2,18 @@ import cors from "cors";
 import dayjs from "dayjs";
 import express from "express";
 import path from "node:path";
-import { URL } from "node:url";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { StateStore } from "./domain/store.js";
 import { buildTemplateProfile } from "./domain/seed.js";
-import type { AssessmentResult, CompanyProfile, PipelineStage, SubmissionStatus, Workspace } from "./domain/types.js";
+import type { AssessmentResult, CompanyProfile, Firm, PipelineStage, SubmissionStatus, Workspace } from "./domain/types.js";
 import { CampaignOrchestrator } from "./orchestrator/workflow.js";
 import { buildOverview, getCachedOverview } from "./services/analytics.js";
 import { AuthService, type AuthUser } from "./services/auth-service.js";
 import { CreditService } from "./services/credit-service.js";
+import { normalizeFirmIdentity, normalizeListKey, normalizeListName } from "./services/firm-normalization.js";
 import { parseFirmsFromGoogleDriveLink, parseFirmsFromUpload } from "./services/import-parser.js";
+import { researchLead } from "./services/lead-research.js";
 import { executeSubmissionRequest, type SubmissionExecutionResult } from "./services/submission-executor.js";
 
 const app = express();
@@ -169,19 +170,6 @@ function baseNameFromFile(fileName: string): string {
   return parts.slice(0, -1).join(".") || withoutQuery || "Imported List";
 }
 
-function normalizeFirmIdentity(name: string, website: string): string {
-  const normalizedName = name.trim().toLowerCase();
-  const normalizedWebsite = website.trim().toLowerCase();
-  try {
-    const parsed = new URL(normalizedWebsite.startsWith("http") ? normalizedWebsite : `https://${normalizedWebsite}`);
-    const host = parsed.hostname.replace(/^www\./, "");
-    const pathPart = parsed.pathname.replace(/\/+$/, "");
-    return `${host}${pathPart ? pathPart : ""}`;
-  } catch {
-    return `${normalizedName}::${normalizedWebsite}`;
-  }
-}
-
 function summarizeLeadLists(
   firms: ReturnType<StateStore["listFirms"]>,
   batches: ReturnType<StateStore["listImportBatches"]>
@@ -192,18 +180,29 @@ function summarizeLeadLists(
   updatedAt: string;
   importBatchCount: number;
 }> {
-  const batchGrouped = new Map<string, { createdAt: string; updatedAt: string; importBatchCount: number }>();
+  const now = new Date().toISOString();
+  const batchGrouped = new Map<string, { name: string; createdAt: string; updatedAt: string; importBatchCount: number }>();
+  const displayNames = new Map<string, string>();
 
   for (const batch of batches) {
-    const key = batch.sourceName;
+    const normalized = normalizeListName(batch.sourceName);
+    const key = normalizeListKey(normalized);
+    if (!displayNames.has(key)) {
+      displayNames.set(key, normalized ?? "Unassigned");
+    }
+
     const existing = batchGrouped.get(key);
     if (!existing) {
       batchGrouped.set(key, {
+        name: normalized ?? "Unassigned",
         createdAt: batch.importedAt,
         updatedAt: batch.importedAt,
         importBatchCount: 1
       });
       continue;
+    }
+    if (normalized) {
+      existing.name = normalized;
     }
     existing.importBatchCount += 1;
     if (batch.importedAt < existing.createdAt) existing.createdAt = batch.importedAt;
@@ -211,25 +210,371 @@ function summarizeLeadLists(
   }
 
   const leadCounts = new Map<string, number>();
+  const leadTimestamps = new Map<string, string>();
   for (const firm of firms) {
-    const key = firm.sourceListName ?? "Unassigned";
+    const normalized = normalizeListName(firm.sourceListName);
+    const key = normalizeListKey(normalized);
+    if (!displayNames.has(key)) {
+      displayNames.set(key, normalized ?? "Unassigned");
+    }
     leadCounts.set(key, (leadCounts.get(key) ?? 0) + 1);
+    const touchedAt = firm.lastTouchedAt ?? now;
+    const prev = leadTimestamps.get(key);
+    if (!prev || touchedAt > prev) {
+      leadTimestamps.set(key, touchedAt);
+    }
   }
 
-  const names = new Set<string>([...leadCounts.keys(), ...batchGrouped.keys()]);
-  return [...names]
-    .map((name) => {
-      const batchInfo = batchGrouped.get(name);
-      const fallbackDate = new Date().toISOString();
+  const keys = new Set<string>([...leadCounts.keys(), ...batchGrouped.keys()]);
+  return [...keys]
+    .map((key) => {
+      const count = leadCounts.get(key) ?? 0;
+      if (count <= 0) return null;
+      const batchInfo = batchGrouped.get(key);
+      const createdAt = batchInfo?.createdAt ?? now;
+      const updatedAt = leadTimestamps.get(key) ?? batchInfo?.updatedAt ?? now;
       return {
-        name,
-        leadCount: leadCounts.get(name) ?? 0,
-        createdAt: batchInfo?.createdAt ?? fallbackDate,
-        updatedAt: batchInfo?.updatedAt ?? fallbackDate,
+        name: displayNames.get(key) ?? "Unassigned",
+        leadCount: count,
+        createdAt,
+        updatedAt,
         importBatchCount: batchInfo?.importBatchCount ?? 0
       };
     })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
     .sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : 1));
+}
+
+const pipelineRank: PipelineStage[] = [
+  "lead",
+  "researching",
+  "qualified",
+  "form_discovered",
+  "form_filled",
+  "submitted",
+  "review",
+  "won",
+  "lost"
+];
+
+function stageRank(stage: PipelineStage): number {
+  const rank = pipelineRank.indexOf(stage);
+  return rank === -1 ? 0 : rank;
+}
+
+function mergeUniqueText(values: string[], limit = 6): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const item of values) {
+    const value = item.trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+    if (result.length >= limit) break;
+  }
+
+  return result;
+}
+
+function choosePreferredFirm(a: Firm, b: Firm): Firm {
+  const score = (firm: Firm): number => {
+    const hasList = normalizeListName(firm.sourceListName) ? 1 : 0;
+    const hasKnownGeo = firm.geography && firm.geography.toLowerCase() !== "unknown" ? 1 : 0;
+    const hasKnownCheck = firm.checkSizeRange && firm.checkSizeRange.toLowerCase() !== "unknown" ? 1 : 0;
+    const sectorWeight = Math.min(1, Math.max(0, firm.focusSectors.filter((v) => v.toLowerCase() !== "general").length / 3));
+    const stageWeight = stageRank(firm.stage) / pipelineRank.length;
+    const recency = Number.isFinite(Date.parse(firm.lastTouchedAt ?? "")) ? Date.parse(firm.lastTouchedAt ?? "") / 10e12 : 0;
+    return hasList + hasKnownGeo + hasKnownCheck + sectorWeight + stageWeight + recency;
+  };
+
+  return score(a) >= score(b) ? a : b;
+}
+
+function mergeFirmRecords(primary: Firm, secondary: Firm): Firm {
+  const primaryList = normalizeListName(primary.sourceListName);
+  const secondaryList = normalizeListName(secondary.sourceListName);
+  const primaryTouched = Date.parse(primary.lastTouchedAt ?? "");
+  const secondaryTouched = Date.parse(secondary.lastTouchedAt ?? "");
+
+  const notes = mergeUniqueText([...(primary.notes ?? []), ...(secondary.notes ?? [])], 20);
+  const focusSectors = mergeUniqueText([...(primary.focusSectors ?? []), ...(secondary.focusSectors ?? [])], 3);
+  const stageFocus = mergeUniqueText([...(primary.stageFocus ?? []), ...(secondary.stageFocus ?? [])], 3);
+  const investmentFocus = mergeUniqueText(
+    [...(primary.investmentFocus ?? []), ...(secondary.investmentFocus ?? [])],
+    3
+  );
+
+  const mergedContacts = [...(primary.contacts ?? []), ...(secondary.contacts ?? [])];
+  const contactsByKey = new Map<string, Firm["contacts"][number]>();
+  for (const contact of mergedContacts) {
+    const key = `${contact.email?.toLowerCase() ?? ""}::${contact.name.toLowerCase().trim()}`;
+    if (!contactsByKey.has(key)) {
+      contactsByKey.set(key, contact);
+    }
+  }
+
+  const newer =
+    Number.isFinite(primaryTouched) && Number.isFinite(secondaryTouched)
+      ? primaryTouched >= secondaryTouched
+        ? primary
+        : secondary
+      : primary;
+  const highestStage = stageRank(primary.stage) >= stageRank(secondary.stage) ? primary.stage : secondary.stage;
+
+  return {
+    ...primary,
+    importBatchId: primary.importBatchId ?? secondary.importBatchId,
+    sourceListName: primaryList ?? secondaryList,
+    geography:
+      primary.geography && primary.geography.toLowerCase() !== "unknown" ? primary.geography : secondary.geography,
+    investorType: primary.investorType !== "Other" ? primary.investorType : secondary.investorType,
+    checkSizeRange:
+      primary.checkSizeRange && primary.checkSizeRange.toLowerCase() !== "unknown"
+        ? primary.checkSizeRange
+        : secondary.checkSizeRange,
+    focusSectors: focusSectors.length > 0 ? focusSectors : ["General"],
+    stageFocus: stageFocus.length > 0 ? stageFocus : ["Seed", "Series A", "Growth"],
+    stage: highestStage,
+    score: Math.max(primary.score ?? 0, secondary.score ?? 0),
+    statusReason: newer.statusReason || primary.statusReason || secondary.statusReason,
+    lastTouchedAt:
+      Number.isFinite(primaryTouched) && Number.isFinite(secondaryTouched)
+        ? new Date(Math.max(primaryTouched, secondaryTouched)).toISOString()
+        : primary.lastTouchedAt ?? secondary.lastTouchedAt,
+    contacts: [...contactsByKey.values()].slice(0, 12),
+    notes,
+    matchScore: Math.max(primary.matchScore ?? 0, secondary.matchScore ?? 0) || undefined,
+    matchReasoning: primary.matchReasoning ?? secondary.matchReasoning,
+    investmentFocus: investmentFocus.length > 0 ? investmentFocus : undefined,
+    researchConfidence: Math.max(primary.researchConfidence ?? 0, secondary.researchConfidence ?? 0) || undefined,
+    researchedAt:
+      Number.isFinite(primaryTouched) && Number.isFinite(secondaryTouched)
+        ? new Date(Math.max(primaryTouched, secondaryTouched)).toISOString()
+        : primary.researchedAt ?? secondary.researchedAt,
+    formDiscovery: primary.formDiscovery ?? secondary.formDiscovery,
+    qualificationScore: Math.max(primary.qualificationScore ?? 0, secondary.qualificationScore ?? 0) || undefined
+  };
+}
+
+function normalizeWorkspaceListNames(workspaceId: string): number {
+  const firms = store.listFirms(workspaceId);
+  let changed = 0;
+
+  for (const firm of firms) {
+    const raw = firm.sourceListName ?? "";
+    const normalized = normalizeListName(firm.sourceListName);
+    const next = normalized ?? undefined;
+    if (raw.trim() === (next ?? "")) continue;
+    store.upsertFirm({ ...firm, sourceListName: next });
+    changed += 1;
+  }
+
+  const batches = store.listImportBatches(workspaceId);
+  const normalizedBatches = batches.map((batch) => ({
+    ...batch,
+    sourceName: normalizeListName(batch.sourceName) ?? "Unassigned"
+  }));
+  store.replaceWorkspaceImportBatches(workspaceId, normalizedBatches);
+
+  return changed;
+}
+
+function dedupeWorkspaceFirms(workspaceId: string): { removed: number; remappedReferences: number } {
+  const firms = store.listFirms(workspaceId);
+  const byIdentity = new Map<string, Firm>();
+  const remap: Record<string, string> = {};
+
+  for (const firm of firms) {
+    const key = normalizeFirmIdentity(firm.name, firm.website);
+    const existing = byIdentity.get(key);
+    if (!existing) {
+      byIdentity.set(key, firm);
+      continue;
+    }
+
+    const preferred = choosePreferredFirm(existing, firm);
+    const other = preferred.id === existing.id ? firm : existing;
+    const merged = mergeFirmRecords(preferred, other);
+    byIdentity.set(key, merged);
+    remap[other.id] = preferred.id;
+  }
+
+  const deduped = [...byIdentity.values()];
+  if (Object.keys(remap).length === 0) {
+    return { removed: 0, remappedReferences: 0 };
+  }
+
+  const resolveFinalId = (id: string): string => {
+    let cursor = id;
+    const seen = new Set<string>();
+    while (remap[cursor] && !seen.has(cursor)) {
+      seen.add(cursor);
+      cursor = remap[cursor];
+    }
+    return cursor;
+  };
+
+  for (const [from, to] of Object.entries(remap)) {
+    remap[from] = resolveFinalId(to);
+  }
+
+  const remappedReferences = store.remapWorkspaceFirmReferences(workspaceId, remap);
+  store.replaceWorkspaceFirms(workspaceId, deduped);
+  return { removed: firms.length - deduped.length, remappedReferences };
+}
+
+function cleanupWorkspaceImports(workspaceId: string): number {
+  const validNames = new Set(
+    store
+      .listFirms(workspaceId)
+      .map((firm) => normalizeListName(firm.sourceListName) ?? "Unassigned")
+      .map((name) => normalizeListKey(name))
+  );
+
+  const batches = store.listImportBatches(workspaceId);
+  const filtered = batches.filter((batch) => validNames.has(normalizeListKey(batch.sourceName)));
+  const removed = batches.length - filtered.length;
+  if (removed > 0) {
+    store.replaceWorkspaceImportBatches(workspaceId, filtered);
+  }
+  return removed;
+}
+
+async function runWorkspaceMaintenance(workspaceId: string): Promise<{ removedDuplicates: number; removedEmptyBatches: number }> {
+  normalizeWorkspaceListNames(workspaceId);
+  const dedupe = dedupeWorkspaceFirms(workspaceId);
+  const removedEmptyBatches = cleanupWorkspaceImports(workspaceId);
+  await store.persist();
+  return {
+    removedDuplicates: dedupe.removed,
+    removedEmptyBatches
+  };
+}
+
+const researchBatchSize = Math.max(10, Number(process.env.RESEARCH_BATCH_SIZE ?? 40));
+const researchIntervalMs = Math.max(15_000, Number(process.env.RESEARCH_INTERVAL_SECONDS ?? 25) * 1000);
+const researchMaxLeadAgeMs = Math.max(6, Number(process.env.RESEARCH_REFRESH_HOURS ?? 72)) * 60 * 60 * 1000;
+const researchInFlight = new Set<string>();
+let researchWatchdogActive = false;
+
+function eligibleForResearch(firm: Firm): boolean {
+  if (["form_filled", "submitted", "won", "lost"].includes(firm.stage)) return false;
+  if (!firm.researchedAt) return true;
+  const researchedAt = Date.parse(firm.researchedAt);
+  if (!Number.isFinite(researchedAt)) return true;
+  return Date.now() - researchedAt >= researchMaxLeadAgeMs;
+}
+
+async function runWorkspaceResearch(workspace: Workspace): Promise<number> {
+  const candidates = store
+    .listFirms(workspace.id)
+    .filter(eligibleForResearch)
+    .sort((a, b) => {
+      const aTouched = Date.parse(a.lastTouchedAt ?? a.researchedAt ?? "") || 0;
+      const bTouched = Date.parse(b.lastTouchedAt ?? b.researchedAt ?? "") || 0;
+      return aTouched - bTouched;
+    })
+    .slice(0, researchBatchSize);
+
+  if (candidates.length === 0) return 0;
+
+  let processed = 0;
+  const runId = `system-research-${workspace.id}`;
+
+  for (const candidate of candidates) {
+    const current = store.getFirm(candidate.id, workspace.id);
+    if (!current) continue;
+    const now = new Date().toISOString();
+
+    if (current.stage === "lead") {
+      store.upsertFirm({
+        ...current,
+        stage: "researching",
+        statusReason: "Background research started.",
+        lastTouchedAt: now
+      });
+    }
+
+    try {
+      const result = await researchLead(current, workspace.profile);
+      const refreshed = store.getFirm(candidate.id, workspace.id) ?? current;
+      const notes = mergeUniqueText(
+        [
+          ...(refreshed.notes ?? []),
+          `Research score ${Math.round(result.qualificationScore * 100)}% · ${result.statusReason}`
+        ],
+        24
+      );
+
+      store.upsertFirm({
+        ...refreshed,
+        geography: result.geography,
+        investorType: result.investorType,
+        checkSizeRange: result.checkSizeRange,
+        focusSectors: result.focusSectors,
+        stageFocus: result.stageFocus,
+        investmentFocus: result.investmentFocus,
+        qualificationScore: result.qualificationScore,
+        researchConfidence: result.researchConfidence,
+        researchedAt: now,
+        formDiscovery: result.formDiscovery,
+        stage: result.nextStage,
+        statusReason: result.formRouteHint ? `${result.statusReason} (${result.formRouteHint})` : result.statusReason,
+        lastTouchedAt: now,
+        notes
+      });
+
+      store.addLog({
+        id: uuid(),
+        workspaceId: workspace.id,
+        runId,
+        timestamp: now,
+        level: "info",
+        message: `Research update for ${refreshed.name}: ${result.statusReason}`,
+        firmId: refreshed.id
+      });
+      processed += 1;
+    } catch (error) {
+      store.addLog({
+        id: uuid(),
+        workspaceId: workspace.id,
+        runId,
+        timestamp: now,
+        level: "warn",
+        message: `Research failed for ${current.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
+        firmId: current.id
+      });
+    }
+  }
+
+  if (processed > 0) {
+    await store.persist();
+  }
+
+  return processed;
+}
+
+async function runResearchWatchdog(): Promise<void> {
+  if (researchWatchdogActive) return;
+  researchWatchdogActive = true;
+
+  try {
+    const workspaces = store.listWorkspaces();
+    for (const workspace of workspaces) {
+      if (researchInFlight.has(workspace.id)) continue;
+      researchInFlight.add(workspace.id);
+      try {
+        await runWorkspaceResearch(workspace);
+      } finally {
+        researchInFlight.delete(workspace.id);
+      }
+    }
+  } finally {
+    researchWatchdogActive = false;
+  }
 }
 
 const submissionMaxAttemptsDefault = Math.max(1, Number(process.env.SUBMISSION_MAX_ATTEMPTS ?? 2));
@@ -956,6 +1301,141 @@ app.get(
   })
 );
 
+const renameListSchema = z.object({
+  currentName: z.string().trim().min(1),
+  nextName: z.string().trim().min(1).max(120)
+});
+
+app.post(
+  "/api/lists/rename",
+  asyncHandler(async (req, res) => {
+    const parsed = renameListSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const currentName = normalizeListName(parsed.data.currentName);
+    const nextName = normalizeListName(parsed.data.nextName);
+
+    if (!currentName || !nextName) {
+      res.status(400).json({ message: "Invalid list name." });
+      return;
+    }
+
+    const currentKey = normalizeListKey(currentName);
+    const nextKey = normalizeListKey(nextName);
+    if (currentKey === nextKey) {
+      res.json({ ok: true, updatedLeads: 0, updatedBatches: 0, lists: summarizeLeadLists(store.listFirms(workspaceId), store.listImportBatches(workspaceId)) });
+      return;
+    }
+
+    const firms = store.listFirms(workspaceId);
+    let updatedLeads = 0;
+    for (const firm of firms) {
+      if (normalizeListKey(firm.sourceListName) !== currentKey) continue;
+      store.upsertFirm({
+        ...firm,
+        sourceListName: nextName,
+        lastTouchedAt: new Date().toISOString()
+      });
+      updatedLeads += 1;
+    }
+
+    const batches = store.listImportBatches(workspaceId);
+    let updatedBatches = 0;
+    store.replaceWorkspaceImportBatches(
+      workspaceId,
+      batches.map((batch) => {
+        if (normalizeListKey(batch.sourceName) !== currentKey) return batch;
+        updatedBatches += 1;
+        return { ...batch, sourceName: nextName };
+      })
+    );
+
+    if (updatedLeads === 0 && updatedBatches === 0) {
+      res.status(404).json({ message: "List not found." });
+      return;
+    }
+
+    await runWorkspaceMaintenance(workspaceId);
+    void runResearchWatchdog();
+    res.json({
+      ok: true,
+      updatedLeads,
+      updatedBatches,
+      lists: summarizeLeadLists(store.listFirms(workspaceId), store.listImportBatches(workspaceId))
+    });
+  })
+);
+
+const deleteListSchema = z.object({
+  name: z.string().trim().min(1),
+  deleteLeads: z.boolean().optional().default(false)
+});
+
+app.post(
+  "/api/lists/delete",
+  asyncHandler(async (req, res) => {
+    const parsed = deleteListSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const listName = normalizeListName(parsed.data.name);
+    if (!listName) {
+      res.status(400).json({ message: "Unassigned list cannot be deleted." });
+      return;
+    }
+
+    const listKey = normalizeListKey(listName);
+    const firms = store.listFirms(workspaceId);
+    const matched = firms.filter((firm) => normalizeListKey(firm.sourceListName) === listKey);
+
+    if (matched.length === 0) {
+      res.status(404).json({ message: "List not found." });
+      return;
+    }
+
+    let removedLeads = 0;
+    let unassignedLeads = 0;
+    if (parsed.data.deleteLeads) {
+      const removed = store.removeWorkspaceFirms(workspaceId, new Set(matched.map((firm) => firm.id)));
+      removedLeads = removed.removedFirms;
+    } else {
+      for (const firm of matched) {
+        store.upsertFirm({
+          ...firm,
+          sourceListName: undefined,
+          lastTouchedAt: new Date().toISOString(),
+          notes: mergeUniqueText([...(firm.notes ?? []), `List '${listName}' removed. Lead moved to Unassigned.`], 24)
+        });
+        unassignedLeads += 1;
+      }
+    }
+
+    const batches = store.listImportBatches(workspaceId);
+    const filteredBatches = batches.filter((batch) => normalizeListKey(batch.sourceName) !== listKey);
+    const removedBatches = batches.length - filteredBatches.length;
+    if (removedBatches > 0) {
+      store.replaceWorkspaceImportBatches(workspaceId, filteredBatches);
+    }
+
+    await runWorkspaceMaintenance(workspaceId);
+    void runResearchWatchdog();
+    res.json({
+      ok: true,
+      removedLeads,
+      unassignedLeads,
+      removedBatches,
+      lists: summarizeLeadLists(store.listFirms(workspaceId), store.listImportBatches(workspaceId))
+    });
+  })
+);
+
 const importFileSchema = z.object({
   fileName: z.string().min(1),
   mimeType: z.string().min(1),
@@ -975,7 +1455,10 @@ app.post(
     const { workspaceId } = await resolveWorkspaceContext(req, res);
     const parsedImport = parseFirmsFromUpload(parsed.data.base64Data, parsed.data.fileName, parsed.data.mimeType, workspaceId);
     const batchId = uuid();
-    const listName = parsed.data.listName?.trim() || baseNameFromFile(parsed.data.fileName);
+    const listName =
+      normalizeListName(parsed.data.listName) ??
+      normalizeListName(baseNameFromFile(parsed.data.fileName)) ??
+      "Imported List";
     const existing = store.listFirms(workspaceId);
     const existingKeys = new Set(existing.map((firm) => normalizeFirmIdentity(firm.name, firm.website)));
 
@@ -1025,7 +1508,8 @@ app.post(
         status: "completed",
         note: `All ${parsedImport.firms.length} leads already exist and were skipped.`
       });
-      await store.persist();
+      await runWorkspaceMaintenance(workspaceId);
+      void runResearchWatchdog();
       res.json({
         imported: 0,
         sourceType: parsedImport.sourceType,
@@ -1052,7 +1536,8 @@ app.post(
       note: skippedDuplicates > 0 ? `${skippedDuplicates} duplicates skipped.` : undefined
     });
 
-    await store.persist();
+    await runWorkspaceMaintenance(workspaceId);
+    void runResearchWatchdog();
     res.json({
       imported: newFirms.length,
       sourceType: parsedImport.sourceType,
@@ -1080,7 +1565,9 @@ app.post(
 
     const { workspaceId } = await resolveWorkspaceContext(req, res);
     const batchId = uuid();
-    const listName = parsed.data.listName?.trim() || `Drive List ${dayjs().format("YYYY-MM-DD HH:mm")}`;
+    const listName =
+      normalizeListName(parsed.data.listName) ??
+      `Drive List ${dayjs().format("YYYY-MM-DD HH:mm")}`;
     const existing = store.listFirms(workspaceId);
     const existingKeys = new Set(existing.map((firm) => normalizeFirmIdentity(firm.name, firm.website)));
 
@@ -1132,7 +1619,8 @@ app.post(
           status: "completed",
           note: `All ${parsedImport.firms.length} leads already exist and were skipped.`
         });
-        await store.persist();
+        await runWorkspaceMaintenance(workspaceId);
+        void runResearchWatchdog();
         res.json({
           imported: 0,
           sourceType: "google_drive",
@@ -1159,7 +1647,8 @@ app.post(
         note: skippedDuplicates > 0 ? `${skippedDuplicates} duplicates skipped.` : undefined
       });
 
-      await store.persist();
+      await runWorkspaceMaintenance(workspaceId);
+      void runResearchWatchdog();
       res.json({
         imported: newFirms.length,
         sourceType: "google_drive",
@@ -1707,10 +2196,20 @@ async function start(): Promise<void> {
 
   await authService.ensureMembershipsForUser(process.env.AUTH_EMAIL ?? "founder@vcops.local", store.listWorkspaces().map((w) => w.id));
 
+  const workspaces = store.listWorkspaces();
+  for (const workspace of workspaces) {
+    await runWorkspaceMaintenance(workspace.id);
+  }
+
   setInterval(() => {
     void runSubmissionWatchdog();
   }, submissionWatchdogIntervalMs);
   void runSubmissionWatchdog();
+
+  setInterval(() => {
+    void runResearchWatchdog();
+  }, researchIntervalMs);
+  void runResearchWatchdog();
 
   app.listen(port, () => {
     console.log(`VCReach backend listening on http://localhost:${port}`);

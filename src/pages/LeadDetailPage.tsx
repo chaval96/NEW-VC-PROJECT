@@ -71,6 +71,63 @@ export function LeadDetailPage(): JSX.Element {
         <Card><CardBody><div className="text-xs text-slate-500">Source List</div><div className="mt-1 font-semibold text-slate-800">{detail.firm.sourceListName ?? "-"}</div></CardBody></Card>
       </div>
 
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardBody>
+            <div className="text-xs text-slate-500">Sector Labels</div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {detail.firm.focusSectors.map((sector) => (
+                <span key={sector} className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-700">
+                  {sector}
+                </span>
+              ))}
+            </div>
+          </CardBody>
+        </Card>
+        <Card>
+          <CardBody>
+            <div className="text-xs text-slate-500">Round Focus</div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {detail.firm.stageFocus.map((item) => (
+                <span key={item} className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-700">
+                  {item}
+                </span>
+              ))}
+            </div>
+          </CardBody>
+        </Card>
+        <Card>
+          <CardBody>
+            <div className="text-xs text-slate-500">Investment Focus</div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {(detail.firm.investmentFocus ?? []).length === 0 ? (
+                <span className="text-xs text-slate-400">Not researched yet</span>
+              ) : (
+                detail.firm.investmentFocus?.map((item) => (
+                  <span key={item} className="rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-700">
+                    {item}
+                  </span>
+                ))
+              )}
+            </div>
+          </CardBody>
+        </Card>
+        <Card>
+          <CardBody>
+            <div className="text-xs text-slate-500">Research Score</div>
+            <div className="mt-1 text-lg font-semibold text-slate-800">
+              {detail.firm.qualificationScore != null ? `${Math.round(detail.firm.qualificationScore * 100)}%` : "-"}
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Confidence: {detail.firm.researchConfidence != null ? `${Math.round(detail.firm.researchConfidence * 100)}%` : "-"}
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              Last research: {detail.firm.researchedAt ? dayjs(detail.firm.researchedAt).format("MMM D, YYYY HH:mm") : "-"}
+            </div>
+          </CardBody>
+        </Card>
+      </div>
+
       <Card className="mb-6">
         <CardHeader>
           <h2 className="text-sm font-semibold">Submission Requests ({detail.submissionRequests.length})</h2>

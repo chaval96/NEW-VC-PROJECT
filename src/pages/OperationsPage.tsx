@@ -7,6 +7,7 @@ import {
   bulkApproveSubmissions,
   bulkRejectSubmissions,
   createRun,
+  deleteLeadList,
   exportFirmsCsv,
   exportSubmissionsCsv,
   getFirms,
@@ -14,7 +15,8 @@ import {
   getRuns,
   getSubmissionQueue,
   importFirmsFile,
-  importFirmsFromDrive
+  importFirmsFromDrive,
+  renameLeadList
 } from "../api";
 import { Button } from "../components/ui/Button";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
@@ -83,6 +85,9 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   const [leadStageFilter, setLeadStageFilter] = useState<string>("all");
   const [listSearch, setListSearch] = useState("");
   const [selectedListNames, setSelectedListNames] = useState<string[]>([]);
+  const [editingListName, setEditingListName] = useState<string>();
+  const [editingListValue, setEditingListValue] = useState("");
+  const [listActionBusy, setListActionBusy] = useState<string>();
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -393,6 +398,65 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
     setSelectedListNames((prev) => (prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name]));
   };
 
+  const startRenameList = (name: string): void => {
+    setEditingListName(name);
+    setEditingListValue(name);
+  };
+
+  const cancelRenameList = (): void => {
+    setEditingListName(undefined);
+    setEditingListValue("");
+  };
+
+  const saveRenameList = async (currentName: string): Promise<void> => {
+    if (!workspaceId) return;
+    const nextName = editingListValue.trim();
+    if (!nextName) {
+      setError("List name cannot be empty.");
+      return;
+    }
+
+    setListActionBusy(`rename:${currentName}`);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      await renameLeadList(workspaceId, currentName, nextName);
+      setSelectedListNames((prev) => prev.map((name) => (name === currentName ? nextName : name)));
+      setNotice(`List '${currentName}' renamed to '${nextName}'.`);
+      cancelRenameList();
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not rename list.");
+    } finally {
+      setListActionBusy(undefined);
+    }
+  };
+
+  const onDeleteList = async (name: string): Promise<void> => {
+    if (!workspaceId) return;
+    const shouldContinue = window.confirm(`Delete list '${name}'? Leads will stay in workspace under 'Unassigned'.`);
+    if (!shouldContinue) return;
+
+    setListActionBusy(`delete:${name}`);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const result = await deleteLeadList(workspaceId, name, false);
+      setSelectedListNames((prev) => prev.filter((item) => item !== name));
+      setNotice(
+        `List '${name}' deleted. ${result.unassignedLeads} leads moved to Unassigned.`
+      );
+      if (editingListName === name) {
+        cancelRenameList();
+      }
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete list.");
+    } finally {
+      setListActionBusy(undefined);
+    }
+  };
+
   if (loading) {
     return <div className="mx-auto max-w-7xl px-6 py-8" />;
   }
@@ -526,25 +590,68 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">List Name</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500"># of Leads</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Last Modified</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredLists.map((list) => {
                   const selected = selectedListNames.includes(list.name);
+                  const isUnassigned = list.name.toLowerCase() === "unassigned";
+                  const isEditing = editingListName === list.name;
                   return (
                     <tr key={list.name} className={selected ? "border-b border-primary-100 bg-primary-50/40" : "border-b border-slate-50 hover:bg-slate-50"}>
                       <td className="px-4 py-2">
                         <input type="checkbox" checked={selected} onChange={() => toggleListSelection(list.name)} />
                       </td>
-                      <td className="px-4 py-2 font-medium text-slate-800">{list.name}</td>
+                      <td className="px-4 py-2 font-medium text-slate-800">
+                        {isEditing ? (
+                          <Input
+                            value={editingListValue}
+                            onChange={(event) => setEditingListValue(event.target.value)}
+                            className="max-w-xs"
+                          />
+                        ) : (
+                          list.name
+                        )}
+                      </td>
                       <td className="px-4 py-2 text-slate-700">{list.leadCount}</td>
                       <td className="px-4 py-2 text-xs text-slate-500">{dayjs(list.updatedAt).format("MMM D, YYYY HH:mm")}</td>
+                      <td className="px-4 py-2">
+                        {isUnassigned ? (
+                          <span className="text-xs text-slate-400">System list</span>
+                        ) : isEditing ? (
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => void saveRenameList(list.name)}
+                              disabled={listActionBusy === `rename:${list.name}`}
+                            >
+                              {listActionBusy === `rename:${list.name}` ? "Saving..." : "Save"}
+                            </Button>
+                            <Button size="sm" variant="secondary" onClick={cancelRenameList}>Cancel</Button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            <Button size="sm" variant="secondary" onClick={() => startRenameList(list.name)}>
+                              Rename
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              onClick={() => void onDeleteList(list.name)}
+                              disabled={listActionBusy === `delete:${list.name}`}
+                            >
+                              {listActionBusy === `delete:${list.name}` ? "Deleting..." : "Delete"}
+                            </Button>
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
                 {filteredLists.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-4 py-6 text-center text-slate-400">No lists found.</td>
+                    <td colSpan={5} className="px-4 py-6 text-center text-slate-400">No lists found.</td>
                   </tr>
                 ) : null}
               </tbody>

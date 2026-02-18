@@ -229,6 +229,34 @@ export function getLeadLists(workspaceId: string): Promise<LeadListSummary[]> {
   return api<LeadListSummary[]>(withWorkspace("/api/lists", workspaceId));
 }
 
+export function renameLeadList(
+  workspaceId: string,
+  currentName: string,
+  nextName: string
+): Promise<{ ok: true; updatedLeads: number; updatedBatches: number; lists: LeadListSummary[] }> {
+  return api<{ ok: true; updatedLeads: number; updatedBatches: number; lists: LeadListSummary[] }>(
+    withWorkspace("/api/lists/rename", workspaceId),
+    {
+      method: "POST",
+      body: JSON.stringify({ currentName, nextName })
+    }
+  );
+}
+
+export function deleteLeadList(
+  workspaceId: string,
+  name: string,
+  deleteLeads = false
+): Promise<{ ok: true; removedLeads: number; unassignedLeads: number; removedBatches: number; lists: LeadListSummary[] }> {
+  return api<{ ok: true; removedLeads: number; unassignedLeads: number; removedBatches: number; lists: LeadListSummary[] }>(
+    withWorkspace("/api/lists/delete", workspaceId),
+    {
+      method: "POST",
+      body: JSON.stringify({ name, deleteLeads })
+    }
+  );
+}
+
 export function importFirmsFile(payload: {
   workspaceId: string;
   fileName: string;

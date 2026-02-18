@@ -63,6 +63,11 @@ export interface Firm {
   notes: string[];
   matchScore?: number;
   matchReasoning?: string;
+  investmentFocus?: string[];
+  researchConfidence?: number;
+  researchedAt?: string;
+  formDiscovery?: "discovered" | "not_found" | "unknown";
+  qualificationScore?: number;
 }
 
 export interface SubmissionEvent {

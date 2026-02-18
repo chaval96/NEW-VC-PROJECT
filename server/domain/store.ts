@@ -212,6 +212,81 @@ export class StateStore {
     this.state.firms = this.state.firms.filter((firm) => firm.workspaceId !== workspaceId).concat(firms);
   }
 
+  removeWorkspaceFirms(workspaceId: string, firmIds: Set<string>): {
+    removedFirms: number;
+    removedEvents: number;
+    removedRequests: number;
+    removedTasks: number;
+    removedLogs: number;
+  } {
+    const beforeFirms = this.state.firms.length;
+    const beforeEvents = this.state.submissionEvents.length;
+    const beforeRequests = this.state.submissionRequests.length;
+    const beforeTasks = this.state.tasks.length;
+    const beforeLogs = this.state.logs.length;
+
+    this.state.firms = this.state.firms.filter((firm) => !(firm.workspaceId === workspaceId && firmIds.has(firm.id)));
+    this.state.submissionEvents = this.state.submissionEvents.filter(
+      (event) => !(event.workspaceId === workspaceId && firmIds.has(event.firmId))
+    );
+    this.state.submissionRequests = this.state.submissionRequests.filter(
+      (request) => !(request.workspaceId === workspaceId && firmIds.has(request.firmId))
+    );
+    this.state.tasks = this.state.tasks.filter((task) => !(task.workspaceId === workspaceId && firmIds.has(task.firmId)));
+    this.state.logs = this.state.logs.filter(
+      (log) => !(log.workspaceId === workspaceId && log.firmId && firmIds.has(log.firmId))
+    );
+
+    return {
+      removedFirms: beforeFirms - this.state.firms.length,
+      removedEvents: beforeEvents - this.state.submissionEvents.length,
+      removedRequests: beforeRequests - this.state.submissionRequests.length,
+      removedTasks: beforeTasks - this.state.tasks.length,
+      removedLogs: beforeLogs - this.state.logs.length
+    };
+  }
+
+  remapWorkspaceFirmReferences(workspaceId: string, idMap: Record<string, string>): number {
+    const entries = Object.entries(idMap).filter(([from, to]) => from !== to);
+    if (entries.length === 0) return 0;
+    const map = new Map(entries);
+    let touched = 0;
+
+    this.state.submissionEvents = this.state.submissionEvents.map((event) => {
+      if (event.workspaceId !== workspaceId) return event;
+      const nextFirmId = map.get(event.firmId);
+      if (!nextFirmId) return event;
+      touched += 1;
+      return { ...event, firmId: nextFirmId };
+    });
+
+    this.state.submissionRequests = this.state.submissionRequests.map((request) => {
+      if (request.workspaceId !== workspaceId) return request;
+      const nextFirmId = map.get(request.firmId);
+      if (!nextFirmId) return request;
+      touched += 1;
+      return { ...request, firmId: nextFirmId };
+    });
+
+    this.state.tasks = this.state.tasks.map((task) => {
+      if (task.workspaceId !== workspaceId) return task;
+      const nextFirmId = map.get(task.firmId);
+      if (!nextFirmId) return task;
+      touched += 1;
+      return { ...task, firmId: nextFirmId };
+    });
+
+    this.state.logs = this.state.logs.map((log) => {
+      if (log.workspaceId !== workspaceId || !log.firmId) return log;
+      const nextFirmId = map.get(log.firmId);
+      if (!nextFirmId) return log;
+      touched += 1;
+      return { ...log, firmId: nextFirmId };
+    });
+
+    return touched;
+  }
+
   addEvent(event: SubmissionEvent): void {
     this.state.submissionEvents.unshift(event);
   }
@@ -256,6 +331,12 @@ export class StateStore {
 
   listImportBatches(workspaceId = this.state.activeWorkspaceId): ImportBatch[] {
     return (this.state.importBatches ?? []).filter((batch) => batch.workspaceId === workspaceId);
+  }
+
+  replaceWorkspaceImportBatches(workspaceId: string, batches: ImportBatch[]): void {
+    this.state.importBatches = (this.state.importBatches ?? [])
+      .filter((batch) => batch.workspaceId !== workspaceId)
+      .concat(batches);
   }
 
   addRun(run: CampaignRun): void {
