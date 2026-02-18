@@ -23,6 +23,15 @@ function stageLabel(value: string): string {
     .join(" ");
 }
 
+type PipelineBucketKey = "leads" | "qualified" | "submission_attempt" | "submitted";
+
+function inBucket(stage: string, bucket: PipelineBucketKey): boolean {
+  if (bucket === "leads") return ["lead", "researching"].includes(stage);
+  if (bucket === "qualified") return ["qualified", "form_discovered"].includes(stage);
+  if (bucket === "submission_attempt") return ["form_filled", "review", "lost"].includes(stage);
+  return ["submitted", "won"].includes(stage);
+}
+
 export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const navigate = useNavigate();
@@ -64,6 +73,27 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
       ...item,
       percentage: total === 0 ? 0 : Math.round((item.count / total) * 100)
     }));
+  }, [overview]);
+
+  const pipelineBuckets = useMemo(() => {
+    if (!overview) return [];
+    const defs: Array<{ key: PipelineBucketKey; label: string; subtitle: string }> = [
+      { key: "leads", label: "Leads", subtitle: "Imported leads" },
+      { key: "qualified", label: "Qualified Leads", subtitle: "Fit + form reachable" },
+      { key: "submission_attempt", label: "Submission Attempt", subtitle: "Attempted/under review" },
+      { key: "submitted", label: "Submitted", subtitle: "Successfully submitted" }
+    ];
+    const total = Math.max(1, overview.stageBreakdown.reduce((sum, item) => sum + item.count, 0));
+    return defs.map((def) => {
+      const count = overview.stageBreakdown
+        .filter((item) => inBucket(item.stage, def.key))
+        .reduce((sum, item) => sum + item.count, 0);
+      return {
+        ...def,
+        count,
+        percentage: Math.round((count / total) * 100)
+      };
+    });
   }, [overview]);
 
   if (loading) {
@@ -138,16 +168,22 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
           </CardHeader>
           <CardBody>
             <div className="space-y-3">
-              {stageBreakdown.map((item) => (
-                <div key={item.stage}>
-                  <div className="mb-1 flex items-center justify-between text-xs text-slate-600">
-                    <span className="font-medium capitalize">{stageLabel(item.stage)}</span>
-                    <span>{item.count} ({item.percentage}%)</span>
+              {pipelineBuckets.map((bucket) => (
+                <button
+                  key={bucket.key}
+                  type="button"
+                  onClick={() => navigate(`/projects/${workspaceId}/operations?bucket=${bucket.key}`)}
+                  className="w-full rounded-lg border border-slate-200 p-3 text-left transition hover:border-primary-300 hover:bg-primary-50/40 dark:border-slate-700 dark:hover:border-primary-500/70 dark:hover:bg-primary-900/20"
+                >
+                  <div className="mb-1 flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
+                    <span className="font-semibold">{bucket.label}</span>
+                    <span>{bucket.count} ({bucket.percentage}%)</span>
                   </div>
-                  <div className="h-2 rounded-full bg-slate-100">
-                    <div className="h-2 rounded-full bg-primary-500" style={{ width: `${item.percentage}%` }} />
+                  <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-700">
+                    <div className="h-2 rounded-full bg-primary-500" style={{ width: `${bucket.percentage}%` }} />
                   </div>
-                </div>
+                  <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{bucket.subtitle}</div>
+                </button>
               ))}
             </div>
           </CardBody>
