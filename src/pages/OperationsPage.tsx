@@ -37,6 +37,7 @@ const DRIVE_HOST_PATTERN = /^https:\/\/(docs|drive)\.google\.com\//i;
 const ALLOWED_EXTENSIONS = [".csv", ".xlsx", ".xls"];
 
 type StageBucket = "all" | "leads" | "qualified" | "submission_attempt" | "submitted";
+type ExecutionScope = "selected" | "filtered" | "selected_lists" | "all";
 const BUCKET_STAGE_MAP: Record<Exclude<StageBucket, "all">, string[]> = {
   leads: ["lead", "researching"],
   qualified: ["qualified", "form_discovered"],
@@ -65,6 +66,16 @@ function isAllowedFile(fileName: string): boolean {
   return ALLOWED_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
+function clampLimit(value: string, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(5000, Math.floor(parsed)));
+}
+
+function uniqueIds(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
 export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const navigate = useNavigate();
@@ -91,7 +102,8 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   const [driveLink, setDriveLink] = useState("");
   const [listName, setListName] = useState("");
   const [runMode, setRunMode] = useState<"dry_run" | "production">("dry_run");
-  const [runScope, setRunScope] = useState<"all" | "filtered">("all");
+  const [executionScope, setExecutionScope] = useState<ExecutionScope>("selected");
+  const [analysisLimitInput, setAnalysisLimitInput] = useState("100");
   const [statusFilter, setStatusFilter] = useState<"all" | SubmissionRequest["status"]>("pending_approval");
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -108,6 +120,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
   const [manualLeadName, setManualLeadName] = useState("");
   const [manualLeadWebsite, setManualLeadWebsite] = useState("");
   const [manualLeadListName, setManualLeadListName] = useState("");
+  const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -190,6 +203,33 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
       })
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [firms, leadQuery, leadStageFilter, selectedListNames, stageBucket]);
+  const visibleLeadResults = useMemo(() => leadResults.slice(0, 350), [leadResults]);
+  const selectedLeadIdSet = useMemo(() => new Set(selectedLeadIds), [selectedLeadIds]);
+
+  const resolveScopeFirmIds = useCallback(
+    (scope: ExecutionScope): string[] => {
+      if (scope === "all") return uniqueIds(firms.map((firm) => firm.id));
+      if (scope === "selected") return uniqueIds(selectedLeadIds.filter((id) => firms.some((firm) => firm.id === id)));
+      if (scope === "filtered") return uniqueIds(leadResults.map((firm) => firm.id));
+      if (selectedListNames.length === 0) return [];
+      const selectedLists = new Set(selectedListNames);
+      return uniqueIds(
+        firms
+          .filter((firm) => selectedLists.has(firm.sourceListName ?? "Unassigned"))
+          .map((firm) => firm.id)
+      );
+    },
+    [firms, leadResults, selectedLeadIds, selectedListNames]
+  );
+
+  const executionTargetIds = useMemo(() => resolveScopeFirmIds(executionScope), [executionScope, resolveScopeFirmIds]);
+  const executionTargetCount = executionTargetIds.length;
+  const analysisLimit = clampLimit(analysisLimitInput, Math.min(100, Math.max(1, executionTargetCount)));
+
+  useEffect(() => {
+    const available = new Set(firms.map((firm) => firm.id));
+    setSelectedLeadIds((prev) => prev.filter((id) => available.has(id)));
+  }, [firms]);
 
   const queueSummary = useMemo(
     () => ({
@@ -323,23 +363,35 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
       return;
     }
 
+    const targetIds = resolveScopeFirmIds(executionScope);
+    if (executionScope !== "all" && targetIds.length === 0) {
+      if (executionScope === "selected") {
+        setError("Select at least one lead to start submission run.");
+      } else if (executionScope === "selected_lists") {
+        setError("Select at least one list to run submissions in bulk.");
+      } else {
+        setError("No leads found in current filtered view.");
+      }
+      return;
+    }
+
     setRunning(true);
     try {
-      let firmIds: string[] | undefined;
-      if (runScope === "filtered") {
-        const candidateIds = filteredQueue
-          .map((request) => request.firmId)
-          .filter((firmId, index, all) => all.indexOf(firmId) === index);
-        firmIds = candidateIds.length > 0 ? candidateIds : undefined;
-      }
-
       const run = await createRun({
         workspaceId,
         initiatedBy: user.name,
         mode: runMode,
-        firmIds
+        firmIds: executionScope === "all" ? undefined : targetIds
       });
-      setNotice(`Run started (${run.mode}) for ${run.totalFirms} investor targets.`);
+      const scopeLabel =
+        executionScope === "selected"
+          ? "selected leads"
+          : executionScope === "filtered"
+            ? "filtered leads"
+            : executionScope === "selected_lists"
+              ? "selected lists"
+              : "all leads";
+      setNotice(`Run started (${run.mode}) for ${run.totalFirms} investor targets (${scopeLabel}).`);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start run.");
@@ -392,6 +444,28 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
 
   const clearSelection = (): void => {
     setSelectedIds([]);
+  };
+
+  const toggleLeadSelection = (firmId: string): void => {
+    setSelectedLeadIds((prev) => (prev.includes(firmId) ? prev.filter((id) => id !== firmId) : [...prev, firmId]));
+  };
+
+  const selectVisibleLeads = (): void => {
+    setSelectedLeadIds(uniqueIds(visibleLeadResults.map((firm) => firm.id)));
+  };
+
+  const clearLeadSelection = (): void => {
+    setSelectedLeadIds([]);
+  };
+
+  const toggleAllVisibleLeads = (): void => {
+    const visibleIds = visibleLeadResults.map((firm) => firm.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedLeadIdSet.has(id));
+    if (allSelected) {
+      setSelectedLeadIds((prev) => prev.filter((id) => !visibleIds.includes(id)));
+      return;
+    }
+    setSelectedLeadIds((prev) => uniqueIds([...prev, ...visibleIds]));
   };
 
   const onBulkApprove = async (): Promise<void> => {
@@ -458,19 +532,44 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
 
   const onQueueResearch = async (): Promise<void> => {
     if (!workspaceId) return;
+    if (firms.length === 0) {
+      setError("Import at least one investor before running qualification analysis.");
+      return;
+    }
+
     setQueueingResearch(true);
     setError(undefined);
     setNotice(undefined);
     try {
-      const payload =
-        selectedListNames.length > 0
-          ? { listNames: selectedListNames, limit: 1200 }
-          : { limit: Math.max(300, firms.length) };
+      const targetIds = resolveScopeFirmIds(executionScope);
+      const limit = Math.min(analysisLimit, Math.max(1, targetIds.length || analysisLimit));
+      let payload: { firmIds?: string[]; listNames?: string[]; limit: number };
+
+      if (executionScope === "selected_lists") {
+        if (selectedListNames.length === 0) {
+          setError("Select at least one list before analyzing list scope.");
+          return;
+        }
+        payload = { listNames: selectedListNames, limit };
+      } else if (executionScope === "all") {
+        payload = { limit };
+      } else {
+        if (targetIds.length === 0) {
+          setError(
+            executionScope === "selected"
+              ? "Select leads first before starting analysis."
+              : "No leads found in current filtered view."
+          );
+          return;
+        }
+        payload = { firmIds: targetIds.slice(0, limit), limit };
+      }
+
       const result = await queueResearchRun(workspaceId, payload);
       setNotice(
         result.queued > 0
-          ? `${result.queued} leads queued for deep enrichment. Refresh in 1-3 minutes to see updates.`
-          : "No leads were queued. Try selecting a list first."
+          ? `${result.queued} leads queued for qualification analysis. Refresh in 1-3 minutes to see stage updates.`
+          : "No leads were queued for analysis."
       );
       await refresh();
     } catch (err) {
@@ -659,9 +758,6 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="secondary" onClick={() => void refresh()}>Refresh</Button>
-          <Button size="sm" variant="secondary" onClick={() => void onQueueResearch()} disabled={queueingResearch}>
-            {queueingResearch ? "Queueing..." : "Run Enrichment"}
-          </Button>
           <Button size="sm" variant="secondary" onClick={() => void onExportFirms()} disabled={exportingFirms}>
             {exportingFirms ? "Exporting..." : "Export Leads"}
           </Button>
@@ -760,20 +856,37 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
             <h2 className="text-sm font-semibold">Run Control</h2>
           </CardHeader>
           <CardBody>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
               <Select value={runMode} onChange={(event) => setRunMode(event.target.value as "dry_run" | "production")} label="Mode">
                 <option value="dry_run">Simulation</option>
                 <option value="production">Live execution</option>
               </Select>
-              <Select value={runScope} onChange={(event) => setRunScope(event.target.value as "all" | "filtered")} label="Scope">
+              <Select value={executionScope} onChange={(event) => setExecutionScope(event.target.value as ExecutionScope)} label="Scope">
+                <option value="selected">Selected leads</option>
+                <option value="filtered">Filtered leads</option>
+                <option value="selected_lists">Selected lists</option>
                 <option value="all">All leads</option>
-                <option value="filtered">Filtered queue firms</option>
               </Select>
-              <div className="flex items-end">
+              <Input
+                label="Analyze limit"
+                type="number"
+                min={1}
+                max={5000}
+                value={analysisLimitInput}
+                onChange={(event) => setAnalysisLimitInput(event.target.value)}
+              />
+              <div className="flex items-end gap-2">
+                <Button variant="secondary" onClick={() => void onQueueResearch()} disabled={queueingResearch}>
+                  {queueingResearch ? "Analyzing..." : "Analyze Leads"}
+                </Button>
                 <Button onClick={() => void onStartRun()} disabled={running}>
-                  {running ? "Starting..." : "Start Run"}
+                  {running ? "Starting..." : "Start Submission Run"}
                 </Button>
               </div>
+            </div>
+            <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300">
+              Scope contains <span className="font-semibold">{executionTargetCount}</span> leads.
+              Analyze runs on up to <span className="font-semibold">{analysisLimit}</span> leads per click.
             </div>
 
             <div className="mt-4 space-y-2">
@@ -1052,7 +1165,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-semibold">Lead Explorer ({leadResults.length})</h2>
-            <div className="text-xs text-slate-500 dark:text-slate-400">Search any imported company and open timeline/log details</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Select leads to analyze qualification and execute submissions</div>
           </div>
 
           <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -1083,6 +1196,21 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                 <div>{bucket.count} leads ({bucket.percentage}%)</div>
               </button>
             ))}
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="secondary" onClick={selectVisibleLeads}>
+              Select visible leads
+            </Button>
+            <Button size="sm" variant="secondary" onClick={toggleAllVisibleLeads}>
+              Toggle visible
+            </Button>
+            <Button size="sm" variant="ghost" onClick={clearLeadSelection}>
+              Clear selection
+            </Button>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              {selectedLeadIds.length} selected
+            </span>
           </div>
 
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -1119,6 +1247,13 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
             <table className="w-full text-sm">
               <thead>
                 <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left dark:border-slate-700 dark:bg-slate-800">
+                  <th className="px-4 py-2">
+                    <input
+                      type="checkbox"
+                      checked={visibleLeadResults.length > 0 && visibleLeadResults.every((firm) => selectedLeadIdSet.has(firm.id))}
+                      onChange={toggleAllVisibleLeads}
+                    />
+                  </th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Company</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">List</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Geo</th>
@@ -1130,8 +1265,22 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {leadResults.slice(0, 350).map((firm) => (
-                  <tr key={firm.id} className="border-b border-slate-50 hover:bg-slate-50 dark:border-slate-700/50 dark:hover:bg-slate-800/50">
+                {visibleLeadResults.map((firm) => (
+                  <tr
+                    key={firm.id}
+                    className={
+                      selectedLeadIdSet.has(firm.id)
+                        ? "border-b border-primary-100 bg-primary-50/40 dark:border-primary-900/50 dark:bg-primary-900/20"
+                        : "border-b border-slate-50 hover:bg-slate-50 dark:border-slate-700/50 dark:hover:bg-slate-800/50"
+                    }
+                  >
+                    <td className="px-4 py-2 align-top">
+                      <input
+                        type="checkbox"
+                        checked={selectedLeadIdSet.has(firm.id)}
+                        onChange={() => toggleLeadSelection(firm.id)}
+                      />
+                    </td>
                     <td className="px-4 py-2">
                       <Link
                         to={`/projects/${workspaceId}/leads/${firm.id}`}
@@ -1163,25 +1312,20 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
                     <td className="max-w-[320px] px-4 py-2 text-xs text-slate-600 dark:text-slate-300">{firm.statusReason}</td>
                     <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">{firm.lastTouchedAt ? dayjs(firm.lastTouchedAt).format("MMM D, YYYY") : "-"}</td>
                     <td className="px-4 py-2">
-                      <div className="flex flex-wrap gap-2">
-                        <Button size="sm" variant="secondary" onClick={() => navigate(`/projects/${workspaceId}/leads/${firm.id}`)}>
-                          Open
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          disabled={leadActionBusyId === `delete:${firm.id}`}
-                          onClick={() => void onDeleteLead(firm)}
-                        >
-                          {leadActionBusyId === `delete:${firm.id}` ? "Deleting..." : "Delete"}
-                        </Button>
-                      </div>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        disabled={leadActionBusyId === `delete:${firm.id}`}
+                        onClick={() => void onDeleteLead(firm)}
+                      >
+                        {leadActionBusyId === `delete:${firm.id}` ? "Deleting..." : "Delete"}
+                      </Button>
                     </td>
                   </tr>
                 ))}
                 {leadResults.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-slate-400 dark:text-slate-500">No leads found for current filters.</td>
+                    <td colSpan={9} className="px-4 py-8 text-center text-slate-400 dark:text-slate-500">No leads found for current filters.</td>
                   </tr>
                 ) : null}
               </tbody>

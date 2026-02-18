@@ -1915,9 +1915,9 @@ app.post(
 );
 
 const queueResearchSchema = z.object({
-  firmIds: z.array(z.string().min(1)).max(800).optional(),
+  firmIds: z.array(z.string().min(1)).max(5000).optional(),
   listNames: z.array(z.string().min(1)).max(200).optional(),
-  limit: z.number().int().min(1).max(1200).optional()
+  limit: z.number().int().min(1).max(5000).optional()
 });
 
 app.post(

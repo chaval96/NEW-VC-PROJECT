@@ -38,7 +38,8 @@ export function normalizeFirmIdentity(name: string, website: string): string {
   const host = normalizeWebsiteHost(website);
   const namePart = normalizeNamePart(name);
 
-  if (host && namePart) return `${host}::${namePart}`;
+  // Domain is the strongest stable key for investor firms.
   if (host) return host;
-  return `${namePart}::${website.toLowerCase().trim()}`;
+  if (namePart) return namePart;
+  return website.toLowerCase().trim();
 }
