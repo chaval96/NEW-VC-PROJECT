@@ -15,6 +15,59 @@ function displayValue(value?: string): string {
   return normalized;
 }
 
+function looksLegacySummary(summary: string): boolean {
+  const lower = summary.toLowerCase();
+  return lower.includes("|") && (lower.includes("geo:") || lower.includes("sectors:") || lower.includes("stages:") || lower.includes("focus:"));
+}
+
+function parseLegacyToken(summary: string, token: string): string | undefined {
+  const regex = new RegExp(`${token}\\s*:\\s*([^|]+)`, "i");
+  const match = summary.match(regex);
+  return match?.[1]?.trim();
+}
+
+function formatList(value?: string, fallback = "not clearly specified"): string {
+  if (!value) return fallback;
+  const parts = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  if (parts.length === 0) return fallback;
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+}
+
+function generateBrief(detail: FirmDetail): string {
+  const summary = detail.firm.researchSummary?.trim();
+  if (summary && !looksLegacySummary(summary) && summary.length > 40) {
+    return summary;
+  }
+
+  const geo = parseLegacyToken(summary ?? "", "geo") ?? displayValue(detail.firm.geography);
+  const sectors = parseLegacyToken(summary ?? "", "sectors") ?? (detail.firm.focusSectors ?? []).filter((item) => item.toLowerCase() !== "general").join(", ");
+  const stages = parseLegacyToken(summary ?? "", "stages") ?? (detail.firm.stageFocus ?? []).join(", ");
+  const focus = parseLegacyToken(summary ?? "", "focus") ?? (detail.firm.investmentFocus ?? []).join(", ");
+  const form = parseLegacyToken(summary ?? "", "form");
+
+  const line1 = `${detail.firm.name} is profiled as ${displayValue(detail.firm.investorType)}${geo !== "Not specified" ? ` based in ${geo}` : ""}.`;
+  const line2 = sectors
+    ? `The firm appears active in ${formatList(sectors)} and is mainly aligned with ${formatList(stages)} rounds.`
+    : `Sector and stage preferences are not fully disclosed, but current data suggests alignment with ${formatList(stages)} rounds.`;
+  const line3 =
+    focus && focus.toLowerCase() !== "not specified"
+      ? `Its geographic or thesis focus points to ${formatList(focus)}.`
+      : "Its geographic investment focus is still being validated.";
+  const line4 =
+    form?.toLowerCase() === "discovered"
+      ? "A startup application/contact route is discoverable on the website."
+      : form?.toLowerCase() === "not found"
+        ? "A clear startup form route has not been found on the current site."
+        : "Form availability is currently not confirmed and remains under validation.";
+
+  return [line1, line2, line3, line4].join(" ");
+}
+
 export function LeadDetailPage(): JSX.Element {
   const { workspaceId, firmId } = useParams<{ workspaceId: string; firmId: string }>();
   const navigate = useNavigate();
@@ -55,6 +108,8 @@ export function LeadDetailPage(): JSX.Element {
       </div>
     );
   }
+
+  const investorBrief = generateBrief(detail);
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8 animate-fade-in">
@@ -161,7 +216,7 @@ export function LeadDetailPage(): JSX.Element {
         </CardHeader>
         <CardBody>
           <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-200">
-            {detail.firm.researchSummary ?? "No research summary yet. Run “Refresh Research” to enrich this lead."}
+            {investorBrief || "No research summary yet. Run “Refresh Research” to enrich this lead."}
           </p>
         </CardBody>
       </Card>
@@ -201,44 +256,6 @@ export function LeadDetailPage(): JSX.Element {
         </CardBody>
       </Card>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <h2 className="text-sm font-semibold">Event Timeline ({detail.events.length})</h2>
-          </CardHeader>
-          <CardBody className="space-y-2">
-            {detail.events.map((event) => (
-              <div key={event.id} className="rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
-                <div className="flex items-center justify-between">
-                  <StatusPill status={event.status} />
-                  <span className="text-xs text-slate-500 dark:text-slate-400">{dayjs(event.attemptedAt).format("MMM D, YYYY HH:mm:ss")}</span>
-                </div>
-                <p className="mt-1 text-slate-600 dark:text-slate-300">{event.note ?? "-"}</p>
-                {event.blockedReason ? <p className="mt-1 text-xs text-red-600">Blocked: {event.blockedReason}</p> : null}
-              </div>
-            ))}
-            {detail.events.length === 0 ? <p className="text-sm text-slate-400 dark:text-slate-500">No timeline events yet.</p> : null}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <h2 className="text-sm font-semibold">Execution Logs ({detail.logs.length})</h2>
-          </CardHeader>
-          <CardBody className="space-y-2">
-            {detail.logs.map((log) => (
-              <div key={log.id} className="rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-700 dark:text-slate-200">{log.level.toUpperCase()}</span>
-                  <span className="text-xs text-slate-500 dark:text-slate-400">{dayjs(log.timestamp).format("MMM D, YYYY HH:mm:ss")}</span>
-                </div>
-                <p className="mt-1 text-slate-600 dark:text-slate-300">{log.message}</p>
-              </div>
-            ))}
-            {detail.logs.length === 0 ? <p className="text-sm text-slate-400 dark:text-slate-500">No execution logs for this lead yet.</p> : null}
-          </CardBody>
-        </Card>
-      </div>
     </div>
   );
 }

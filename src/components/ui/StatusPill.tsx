@@ -27,11 +27,17 @@ const pillMap: Record<string, string> = {
   running: "pill-blue",
 };
 
+const labelMap: Record<string, string> = {
+  researching: "lead",
+  form_discovered: "qualified"
+};
+
 export function StatusPill({ status }: { status: StatusValue }): JSX.Element {
   const cls = pillMap[status] ?? "pill-slate";
+  const normalizedLabel = labelMap[String(status)] ?? String(status).replaceAll("_", " ");
   return (
     <span className={`inline-block rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide font-mono ${cls}`}>
-      {String(status).replaceAll("_", " ")}
+      {normalizedLabel}
     </span>
   );
 }

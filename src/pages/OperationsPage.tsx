@@ -1091,9 +1091,7 @@ export function OperationsPage({ user }: OperationsPageProps): JSX.Element {
               <option value="all">All stages</option>
               {[
                 "lead",
-                "researching",
                 "qualified",
-                "form_discovered",
                 "form_filled",
                 "submitted",
                 "review",

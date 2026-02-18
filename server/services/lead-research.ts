@@ -845,6 +845,7 @@ function buildInvestorBrief(
   firm: Firm,
   geography: string,
   investorType: Firm["investorType"],
+  checkSizeRange: string,
   sectors: string[],
   stageFocus: string[],
   investmentFocus: string[],
@@ -858,31 +859,36 @@ function buildInvestorBrief(
   const investmentAreas = investmentFocus.filter((item) => item.trim().length > 0);
   const signals = inferWebsiteSignals(text);
 
-  const sentences: string[] = [];
-  sentences.push(
-    `${firm.name} appears to be ${withArticle(investorType)} with ${geoLabel === "location not clearly disclosed" ? geoLabel : `operations centered in ${geoLabel}`}.`
-  );
-  sentences.push(
+  const checkKnown = checkSizeRange.trim().length > 0 && checkSizeRange.toLowerCase() !== "unknown";
+  const sentences: string[] = [
+    `${firm.name} appears to be ${withArticle(investorType)} ${geoLabel === "location not clearly disclosed" ? `with ${geoLabel}` : `based in ${geoLabel}`}.`,
     focusAreas.length > 0
-      ? `Its public profile indicates focus areas such as ${formatList(focusAreas)}.`
-      : "Its public profile does not clearly specify sector focus areas."
-  );
-  sentences.push(
+      ? `Its published focus areas include ${formatList(focusAreas)}.`
+      : "Its public materials do not clearly specify sector preferences yet.",
     stageAreas.length > 0
-      ? `It most often signals interest in ${formatList(stageAreas)} rounds${investmentAreas.length > 0 ? ` with emphasis on ${formatList(investmentAreas)}` : ""}.`
-      : `Investment stage preferences are not explicit${investmentAreas.length > 0 ? `, but regional focus points to ${formatList(investmentAreas)}` : ""}.`
-  );
+      ? `It is most aligned with ${formatList(stageAreas)} stage opportunities${investmentAreas.length > 0 ? ` and typically targets ${formatList(investmentAreas)}` : ""}${checkKnown ? `, with a disclosed check profile around ${checkSizeRange}` : ""}.`
+      : `Stage preferences are not clearly disclosed${investmentAreas.length > 0 ? `, while geographic scope suggests ${formatList(investmentAreas)}` : ""}${checkKnown ? ` and check profile appears around ${checkSizeRange}` : ""}.`
+  ];
 
   if (signals.length > 0) {
-    sentences.push(`Additional signals mention ${formatList(signals)}.`);
+    sentences.push(`Website signals suggest ${formatList(signals)}.`);
   } else if (externalSummary.length > 0) {
-    sentences.push(`${externalSummary[0].replace(/^Wikipedia:\s*/i, "").replace(/^Wikidata:\s*/i, "")}.`);
+    const hint = externalSummary[0]
+      .replace(/^Wikipedia:\s*/i, "")
+      .replace(/^Wikidata:\s*/i, "")
+      .replace(/^OpenVC\s*/i, "")
+      .trim();
+    if (hint.length > 0) {
+      sentences.push(`Additional public-source context: ${hint}.`);
+    }
   }
 
   if (formStatus === "discovered") {
-    sentences.push("A reachable contact or application form appears to be available on the website.");
+    sentences.push("A startup application/contact form is discoverable on the website.");
   } else if (formStatus === "not_found") {
-    sentences.push("A dedicated startup application form is not clearly exposed on the website right now.");
+    sentences.push("No clear startup submission form is exposed on the current website structure.");
+  } else {
+    sentences.push("Form availability is still being validated from public sources.");
   }
 
   return sentences.slice(0, 4).join(" ");
@@ -931,11 +937,10 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
   );
 
   const qualificationScore = computeQualificationScore(profile, merged.focusSectors, merged.stageFocus, merged.investmentFocus);
-  const qualified = qualificationScore >= 0.55;
+  const qualifiedByFit = qualificationScore >= 0.55;
+  const hasFormRoute = merged.formSignal.status === "discovered";
+  const qualified = qualifiedByFit && hasFormRoute;
   let nextStage: PipelineStage = qualified ? "qualified" : "lead";
-  if (qualified && merged.formSignal.status === "discovered") {
-    nextStage = "form_discovered";
-  }
 
   const confidence = bounded(
     0.42 +
@@ -943,12 +948,11 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
       (merged.formSignal.status === "discovered" ? 0.08 : 0) +
       merged.confidenceBoost
   );
-  const statusReason =
-    nextStage === "form_discovered"
-      ? "Qualified fit and form route discovered."
-      : qualified
-        ? "Researched and qualified by funding profile fit."
-        : "Researched, but currently below qualification threshold.";
+  const statusReason = qualified
+    ? "Qualified fit with discoverable form route."
+    : qualifiedByFit
+      ? "Potential fit found, but form route is not verified yet."
+      : "Researched, but currently below qualification threshold.";
 
   const sourceLinks = uniqueTop(
     [...pages.map((page) => page.url), ...merged.sources],
@@ -958,6 +962,7 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
     firm,
     merged.geography,
     merged.investorType,
+    merged.checkSizeRange,
     merged.focusSectors,
     merged.stageFocus,
     merged.investmentFocus,

@@ -41,7 +41,7 @@ function statusToStage(status: SubmissionStatus): PipelineStage {
     case "form_filled":
       return "form_filled";
     case "form_discovered":
-      return "form_discovered";
+      return "qualified";
     case "blocked":
     case "no_form_found":
     case "needs_review":
@@ -52,6 +52,12 @@ function statusToStage(status: SubmissionStatus): PipelineStage {
     default:
       return "qualified";
   }
+}
+
+function normalizePipelineStage(stage: PipelineStage): PipelineStage {
+  if (stage === "researching") return "lead";
+  if (stage === "form_discovered") return "qualified";
+  return stage;
 }
 
 function parseBearerToken(authHeader?: string): string | undefined {
@@ -459,6 +465,16 @@ function cleanupWorkspaceImports(workspaceId: string): number {
 
 async function runWorkspaceMaintenance(workspaceId: string): Promise<{ removedDuplicates: number; removedEmptyBatches: number }> {
   normalizeWorkspaceListNames(workspaceId);
+  for (const firm of store.listFirms(workspaceId)) {
+    const nextStage = normalizePipelineStage(firm.stage);
+    if (nextStage !== firm.stage) {
+      store.upsertFirm({
+        ...firm,
+        stage: nextStage,
+        lastTouchedAt: new Date().toISOString()
+      });
+    }
+  }
   const dedupe = dedupeWorkspaceFirms(workspaceId);
   const removedEmptyBatches = cleanupWorkspaceImports(workspaceId);
   await store.persist();
@@ -564,7 +580,7 @@ async function runFirmResearch(
       researchSources: result.researchSources,
       researchSummary: result.researchSummary,
       stage: result.nextStage,
-      statusReason: result.formRouteHint ? `${result.statusReason} (${result.formRouteHint})` : result.statusReason,
+      statusReason: result.statusReason,
       lastTouchedAt: now,
       notes
     });
