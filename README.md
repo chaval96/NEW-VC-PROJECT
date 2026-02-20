@@ -81,6 +81,16 @@ Optional (browser automation):
 
 - `PLAYWRIGHT_ENABLED=true`
 - `PLAYWRIGHT_SUBMIT_ENABLED=true`
+- `PLAYWRIGHT_GLOBAL_MODULE_PATH=/usr/local/lib/node_modules/playwright` (default in Docker runtime)
+
+Optional (OpenAI agent-assisted research enrichment):
+
+- `OPENAI_API_KEY`
+- `OPENAI_RESEARCH_ENABLED=true`
+- `OPENAI_RESEARCH_MODEL=gpt-4.1-mini`
+- `OPENAI_RESEARCH_MAX_OUTPUT_TOKENS=700`
+- `OPENAI_WORKFLOW_ID` (optional; if set, VCReach tries your workflow first)
+- `OPENAI_WORKFLOW_VERSION` (optional)
 
 Optional reliability controls (cheap defaults already enabled):
 
@@ -161,3 +171,8 @@ Optional endpoints (only when feature flags are enabled):
    - investor import
    - processing run
    - approval queue actions
+
+## Production note (browser runtime)
+
+The Docker runtime now installs Playwright + Chromium for live form execution and pre-submit screenshots.
+If you keep `PLAYWRIGHT_ENABLED=false`, the app remains simulation-only and will not claim live submitted proof.

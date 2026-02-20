@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import type { SubmissionRequest, SubmissionStatus } from "../domain/types.js";
 import { buildPreSubmitScreenshotRelativePath, resolveEvidenceAbsolutePath } from "./execution-evidence.js";
@@ -21,6 +22,23 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const require = createRequire(import.meta.url);
+const fallbackPlaywrightPath = process.env.PLAYWRIGHT_GLOBAL_MODULE_PATH?.trim() || "/usr/local/lib/node_modules/playwright";
+const playwrightPackageName = process.env.PLAYWRIGHT_PACKAGE_NAME?.trim() || "playwright";
+
+async function loadPlaywright(): Promise<any | undefined> {
+  try {
+    const local = await import(playwrightPackageName);
+    return local;
+  } catch {
+    try {
+      return require(fallbackPlaywrightPath);
+    } catch {
+      return undefined;
+    }
+  }
+}
+
 interface ExecutionOptions {
   attempt: number;
 }
@@ -29,7 +47,6 @@ export async function executeSubmissionRequest(
   request: SubmissionRequest,
   options: ExecutionOptions
 ): Promise<SubmissionExecutionResult> {
-  const moduleName = "playwright";
   const enablePlaywright = process.env.PLAYWRIGHT_ENABLED === "true";
   const enableSubmit = process.env.PLAYWRIGHT_SUBMIT_ENABLED === "true";
 
@@ -46,8 +63,23 @@ export async function executeSubmissionRequest(
   }
 
   try {
-    const playwright = (await import(moduleName)) as any;
-    const browser = await playwright.chromium.launch({ headless: true });
+    const playwright = await loadPlaywright();
+    if (!playwright?.chromium?.launch) {
+      return {
+        status: request.mode === "dry_run" ? "form_filled" : "needs_review",
+        note: "Playwright runtime not found in this environment. No live browser execution was performed.",
+        discoveredAt: request.mode === "dry_run" ? nowIso() : undefined,
+        filledAt: request.mode === "dry_run" ? nowIso() : undefined,
+        executionMode: "simulated",
+        proofLevel: "none",
+        submittedVerified: false
+      };
+    }
+
+    const browser = await playwright.chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"]
+    });
     const page = await browser.newPage();
 
     await page.goto(request.website, { waitUntil: "domcontentloaded", timeout: 30000 });

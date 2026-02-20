@@ -51,6 +51,11 @@ const openVcEnabled = process.env.OPENVC_ENRICH_ENABLED !== "false";
 const wikidataEnabled = process.env.WIKIDATA_ENRICH_ENABLED !== "false";
 const opencorporatesEnabled = process.env.OPENCORPORATES_ENRICH_ENABLED === "true";
 const wikipediaEnabled = process.env.WIKIPEDIA_ENRICH_ENABLED !== "false";
+const openAiResearchEnabled = process.env.OPENAI_RESEARCH_ENABLED === "true";
+const openAiResearchModel = process.env.OPENAI_RESEARCH_MODEL?.trim() || "gpt-4.1-mini";
+const openAiResearchMaxTokens = Math.max(300, Number(process.env.OPENAI_RESEARCH_MAX_OUTPUT_TOKENS ?? 700));
+const openAiWorkflowId = process.env.OPENAI_WORKFLOW_ID?.trim() ?? "";
+const openAiWorkflowVersion = process.env.OPENAI_WORKFLOW_VERSION?.trim() ?? "";
 
 const importantPathHints = [
   "contact",
@@ -252,6 +257,251 @@ async function fetchJson<T>(url: string): Promise<T | undefined> {
     });
     if (!response.ok) return undefined;
     return (await response.json()) as T;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function extractJsonObject(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed;
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first >= 0 && last > first) {
+    return trimmed.slice(first, last + 1);
+  }
+  return trimmed;
+}
+
+function toStringArray(value: unknown, limit = 3): string[] {
+  if (!Array.isArray(value)) return [];
+  return uniqueTop(
+    value
+      .map((item) => (typeof item === "string" ? item : ""))
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
+    limit
+  );
+}
+
+function normalizeFormDiscovery(value: unknown): "discovered" | "not_found" | "unknown" | undefined {
+  if (typeof value !== "string") return undefined;
+  const lower = value.trim().toLowerCase();
+  if (lower === "discovered") return "discovered";
+  if (lower === "not_found") return "not_found";
+  if (lower === "unknown") return "unknown";
+  return undefined;
+}
+
+function extractOpenAiOutputText(payload: any): string {
+  if (typeof payload?.output_text === "string" && payload.output_text.trim().length > 0) {
+    return payload.output_text.trim();
+  }
+
+  const chunks: string[] = [];
+  const output = Array.isArray(payload?.output) ? payload.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const part of content) {
+      if (typeof part?.text === "string" && part.text.trim().length > 0) {
+        chunks.push(part.text.trim());
+      } else if (typeof part?.value === "string" && part.value.trim().length > 0) {
+        chunks.push(part.value.trim());
+      }
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+function buildOpenAiResearchInput(firm: Firm, profile: CompanyProfile): Array<{ role: string; content: string }> {
+  return [
+    {
+      role: "system",
+      content:
+        "You are a VC investor research analyst. Return strictly valid JSON for investor profiling used by a fundraising platform."
+    },
+    {
+      role: "user",
+      content: [
+        `Investor name: ${firm.name}`,
+        `Investor website: ${firm.website}`,
+        `Startup context: ${profile.company}, round ${profile.fundraising.round}, description: ${profile.oneLiner}`,
+        "Return JSON object with keys:",
+        "geography (string), investorType (VC|Angel Network|Syndicate|Other), checkSizeRange (string),",
+        "focusSectors (string[] up to 3), stageFocus (string[] up to 3), investmentFocus (string[] up to 3),",
+        "formDiscovery (discovered|not_found|unknown), formRouteHint (string optional),",
+        "brief (2-4 sentence summary), sources (string[] up to 5), confidence (0..1)."
+      ].join("\n")
+    }
+  ];
+}
+
+function buildOpenAiResearchFormat(): Record<string, unknown> {
+  return {
+    format: {
+      type: "json_schema",
+      name: "investor_research",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          geography: { type: "string" },
+          investorType: { type: "string" },
+          checkSizeRange: { type: "string" },
+          focusSectors: {
+            type: "array",
+            items: { type: "string" },
+            maxItems: 3
+          },
+          stageFocus: {
+            type: "array",
+            items: { type: "string" },
+            maxItems: 3
+          },
+          investmentFocus: {
+            type: "array",
+            items: { type: "string" },
+            maxItems: 3
+          },
+          formDiscovery: { type: "string" },
+          formRouteHint: { type: "string" },
+          brief: { type: "string" },
+          sources: {
+            type: "array",
+            items: { type: "string" },
+            maxItems: 5
+          },
+          confidence: { type: "number" }
+        },
+        required: ["geography", "investorType", "focusSectors", "stageFocus", "investmentFocus", "formDiscovery"]
+      }
+    }
+  };
+}
+
+function parseOpenAiResearchObject(payload: any): Record<string, unknown> | undefined {
+  const raw = extractOpenAiOutputText(payload);
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(extractJsonObject(raw)) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+async function callOpenAiResponses(
+  apiKey: string,
+  body: Record<string, unknown>,
+  signal: AbortSignal
+): Promise<Record<string, unknown> | undefined> {
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    signal,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) return undefined;
+  const payload = (await response.json()) as any;
+  return parseOpenAiResearchObject(payload);
+}
+
+async function fetchOpenAiResearchHints(firm: Firm, profile: CompanyProfile): Promise<ExternalHints | undefined> {
+  if (!openAiResearchEnabled) return undefined;
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) return undefined;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EXTERNAL_TIMEOUT_MS);
+
+  try {
+    const input = buildOpenAiResearchInput(firm, profile);
+    const text = buildOpenAiResearchFormat();
+
+    let parsed: Record<string, unknown> | undefined;
+
+    if (openAiWorkflowId) {
+      const workflowCandidates: Array<Record<string, unknown>> = [
+        {
+          workflow: openAiWorkflowVersion
+            ? { id: openAiWorkflowId, version: openAiWorkflowVersion }
+            : { id: openAiWorkflowId },
+          input,
+          text,
+          max_output_tokens: openAiResearchMaxTokens
+        },
+        {
+          workflow_id: openAiWorkflowId,
+          ...(openAiWorkflowVersion ? { workflow_version: openAiWorkflowVersion } : {}),
+          input,
+          text,
+          max_output_tokens: openAiResearchMaxTokens
+        },
+        {
+          model: openAiWorkflowId,
+          input,
+          text,
+          max_output_tokens: openAiResearchMaxTokens
+        }
+      ];
+
+      for (const body of workflowCandidates) {
+        parsed = await callOpenAiResponses(apiKey, body, controller.signal);
+        if (parsed) break;
+      }
+    }
+
+    if (!parsed) {
+      parsed = await callOpenAiResponses(
+        apiKey,
+        {
+          model: openAiResearchModel,
+          tools: [{ type: "web_search_preview" }],
+          max_output_tokens: openAiResearchMaxTokens,
+          input,
+          text
+        },
+        controller.signal
+      );
+    }
+
+    if (!parsed) return undefined;
+
+    const geography = typeof parsed.geography === "string" ? parsed.geography.trim() : undefined;
+    const investorType =
+      typeof parsed.investorType === "string"
+        ? toInvestorTypeFromText(parsed.investorType) ?? undefined
+        : undefined;
+    const checkSizeRange = typeof parsed.checkSizeRange === "string" ? parsed.checkSizeRange.trim() : undefined;
+    const focusSectors = toStringArray(parsed.focusSectors, 3);
+    const stageFocus = toStringArray(parsed.stageFocus, 3);
+    const investmentFocus = toStringArray(parsed.investmentFocus, 3);
+    const formDiscovery = normalizeFormDiscovery(parsed.formDiscovery);
+    const formRouteHint = typeof parsed.formRouteHint === "string" ? parsed.formRouteHint.trim() : undefined;
+    const brief = typeof parsed.brief === "string" ? parsed.brief.trim() : "";
+    const sources = toStringArray(parsed.sources, 5);
+    const confidence = typeof parsed.confidence === "number" ? bounded(parsed.confidence, 0, 1) : 0.6;
+
+    return {
+      geography: geography || undefined,
+      investorType,
+      checkSizeRange: checkSizeRange || undefined,
+      focusSectors,
+      stageFocus,
+      investmentFocus,
+      formDiscovery,
+      formRouteHint: formDiscovery === "discovered" ? formRouteHint : undefined,
+      sources,
+      summary: brief ? [brief] : [],
+      confidenceBoost: bounded(0.08 + confidence * 0.18, 0.08, 0.26)
+    };
   } catch {
     return undefined;
   } finally {
@@ -915,6 +1165,7 @@ export async function researchLead(firm: Firm, profile: CompanyProfile): Promise
   const externalHints = shouldFetchExternal
     ? (
         await Promise.all([
+          fetchOpenAiResearchHints(firm, profile),
           fetchOpenVcHints(firm),
           fetchWikidataHints(firm),
           fetchWikipediaHints(firm),
