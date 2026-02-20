@@ -253,7 +253,7 @@ export function DashboardPage({ user }: DashboardPageProps): JSX.Element {
         </CardBody>
       </Card>
 
-      <ActivityTable events={overview.recentActivities} />
+      <ActivityTable events={overview.recentActivities} workspaceId={workspaceId} />
     </div>
   );
 }

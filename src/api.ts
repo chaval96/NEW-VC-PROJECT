@@ -391,6 +391,35 @@ export function getSubmissionDetail(workspaceId: string, requestId: string): Pro
   return api<SubmissionDetail>(withWorkspace(`/api/submissions/${requestId}`, workspaceId));
 }
 
+export async function getPreSubmitScreenshotUrl(workspaceId: string, requestId: string): Promise<string | undefined> {
+  const token = getAuthToken();
+  const headers = new Headers();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const response = await fetch(withWorkspace(`/api/submissions/${requestId}/evidence/pre-submit`, workspaceId), {
+    headers
+  });
+
+  if (response.status === 404) {
+    return undefined;
+  }
+  if (!response.ok) {
+    let message = `Request failed: ${response.status}`;
+    try {
+      const body = (await response.json()) as { message?: string };
+      if (body.message) message = body.message;
+    } catch {
+      // ignore parse errors
+    }
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+
 export function approveSubmission(workspaceId: string, requestId: string, approvedBy: string): Promise<{ request: SubmissionRequest }> {
   return api<{ request: SubmissionRequest }>(withWorkspace(`/api/submissions/${requestId}/approve`, workspaceId), {
     method: "POST",

@@ -232,8 +232,10 @@ export function LeadDetailPage(): JSX.Element {
                 <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left dark:border-slate-700 dark:bg-slate-800">
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Status</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Mode</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Proof</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Prepared</th>
                   <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Result</th>
+                  <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Detail</th>
                 </tr>
               </thead>
               <tbody>
@@ -241,13 +243,25 @@ export function LeadDetailPage(): JSX.Element {
                   <tr key={request.id} className="border-b border-slate-50 hover:bg-slate-50 dark:border-slate-700/50 dark:hover:bg-slate-800/50">
                     <td className="px-4 py-2"><StatusPill status={request.status} /></td>
                     <td className="px-4 py-2 text-slate-600 dark:text-slate-300">{request.mode}</td>
+                    <td className="px-4 py-2 text-xs text-slate-600 dark:text-slate-300">
+                      {request.proofLevel === "submitted_confirmation"
+                        ? "Submitted confirmed"
+                        : request.preSubmitScreenshotPath
+                          ? "Screenshot captured"
+                          : "No proof"}
+                    </td>
                     <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">{dayjs(request.preparedAt).format("MMM D, YYYY HH:mm")}</td>
                     <td className="px-4 py-2 text-xs text-slate-600 dark:text-slate-300">{request.resultNote ?? "-"}</td>
+                    <td className="px-4 py-2">
+                      <Button size="sm" variant="secondary" onClick={() => navigate(`/projects/${workspaceId}/submissions/${request.id}`)}>
+                        View
+                      </Button>
+                    </td>
                   </tr>
                 ))}
                 {detail.submissionRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-4 py-6 text-center text-slate-400 dark:text-slate-500">No submission requests yet.</td>
+                    <td colSpan={6} className="px-4 py-6 text-center text-slate-400 dark:text-slate-500">No submission requests yet.</td>
                   </tr>
                 ) : null}
               </tbody>

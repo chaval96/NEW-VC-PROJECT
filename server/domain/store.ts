@@ -295,6 +295,12 @@ export class StateStore {
     return this.state.submissionEvents.filter((event) => event.workspaceId === workspaceId);
   }
 
+  replaceWorkspaceEvents(workspaceId: string, events: SubmissionEvent[]): void {
+    this.state.submissionEvents = this.state.submissionEvents
+      .filter((event) => event.workspaceId !== workspaceId)
+      .concat(events);
+  }
+
   addSubmissionRequest(request: SubmissionRequest): void {
     this.state.submissionRequests.unshift(request);
   }

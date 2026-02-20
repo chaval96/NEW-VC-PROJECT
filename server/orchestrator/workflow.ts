@@ -159,7 +159,7 @@ export class CampaignOrchestrator {
     );
     this.store.addSubmissionRequest(request);
 
-    const event = this.createQueuedEvent(workspace.id, runId, firm, mode);
+    const event = this.createQueuedEvent(workspace.id, runId, firm, mode, request.id);
     this.store.addEvent(event);
 
     this.updateFirm(firm, {
@@ -223,7 +223,8 @@ export class CampaignOrchestrator {
     workspaceId: string,
     runId: string,
     firm: Firm,
-    mode: "dry_run" | "production"
+    mode: "dry_run" | "production",
+    requestId?: string
   ): SubmissionEvent {
     const attemptedAt = new Date().toISOString();
     const base = dayjs(attemptedAt);
@@ -231,6 +232,7 @@ export class CampaignOrchestrator {
     return {
       id: uuid(),
       workspaceId,
+      requestId,
       firmId: firm.id,
       firmName: firm.name,
       channel: "website_form",

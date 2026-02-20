@@ -1,7 +1,7 @@
 import dayjs from "dayjs";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { activateWorkspace, approveSubmission, getSubmissionDetail, rejectSubmission } from "../api";
+import { activateWorkspace, approveSubmission, getPreSubmitScreenshotUrl, getSubmissionDetail, rejectSubmission } from "../api";
 import { Button } from "../components/ui/Button";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { StatusPill } from "../components/ui/StatusPill";
@@ -23,12 +23,35 @@ export function SubmissionDetailPage({ user }: SubmissionDetailPageProps): JSX.E
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [preSubmitScreenshotUrl, setPreSubmitScreenshotUrl] = useState<string>();
+  const [loadingEvidence, setLoadingEvidence] = useState(false);
 
   const refresh = async (): Promise<void> => {
     if (!workspaceId || !submissionId) return;
     const result = await getSubmissionDetail(workspaceId, submissionId);
+    if (preSubmitScreenshotUrl) {
+      URL.revokeObjectURL(preSubmitScreenshotUrl);
+      setPreSubmitScreenshotUrl(undefined);
+    }
+    if (result.request.preSubmitScreenshotPath) {
+      setLoadingEvidence(true);
+      try {
+        const nextEvidenceUrl = await getPreSubmitScreenshotUrl(workspaceId, submissionId);
+        setPreSubmitScreenshotUrl(nextEvidenceUrl);
+      } finally {
+        setLoadingEvidence(false);
+      }
+    }
     setDetail(result);
   };
+
+  useEffect(() => {
+    return () => {
+      if (preSubmitScreenshotUrl) {
+        URL.revokeObjectURL(preSubmitScreenshotUrl);
+      }
+    };
+  }, [preSubmitScreenshotUrl]);
 
   useEffect(() => {
     if (!workspaceId || !submissionId) {
@@ -125,6 +148,15 @@ export function SubmissionDetailPage({ user }: SubmissionDetailPageProps): JSX.E
             <div><span className="text-slate-500">Approved At:</span> {detail.request.approvedAt ? dayjs(detail.request.approvedAt).format("MMM D, YYYY HH:mm") : "-"}</div>
             <div><span className="text-slate-500">Executed At:</span> {detail.request.executedAt ? dayjs(detail.request.executedAt).format("MMM D, YYYY HH:mm") : "-"}</div>
             <div><span className="text-slate-500">Attempts:</span> {detail.request.executionAttempts ?? 0} / {detail.request.maxExecutionAttempts ?? "-"}</div>
+            <div><span className="text-slate-500">Execution Mode:</span> {detail.request.executionMode ?? "-"}</div>
+            <div><span className="text-slate-500">Proof Level:</span> {detail.request.proofLevel ?? "none"}</div>
+            <div><span className="text-slate-500">Submitted Verified:</span> {detail.request.submittedVerified ? "Yes" : "No"}</div>
+            <div>
+              <span className="text-slate-500">Pre-submit Screenshot Time:</span>{" "}
+              {detail.request.preSubmitScreenshotCapturedAt
+                ? dayjs(detail.request.preSubmitScreenshotCapturedAt).format("MMM D, YYYY HH:mm")
+                : "-"}
+            </div>
             <div><span className="text-slate-500">Result:</span> {detail.request.resultNote ?? "-"}</div>
           </CardBody>
         </Card>
@@ -174,6 +206,37 @@ export function SubmissionDetailPage({ user }: SubmissionDetailPageProps): JSX.E
             <div className="mb-1 font-semibold text-slate-600">Raise Summary</div>
             {detail.request.preparedPayload.raiseSummary}
           </div>
+        </CardBody>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <h2 className="text-sm font-semibold">Pre-Submit Evidence</h2>
+        </CardHeader>
+        <CardBody>
+          {loadingEvidence ? (
+            <p className="text-sm text-slate-500">Loading screenshot...</p>
+          ) : preSubmitScreenshotUrl ? (
+            <div className="space-y-3">
+              <img
+                src={preSubmitScreenshotUrl}
+                alt={`Pre-submit form evidence for ${detail.request.firmName}`}
+                className="max-h-[520px] w-full rounded-lg border border-slate-200 object-contain"
+              />
+              <a
+                href={preSubmitScreenshotUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm font-medium text-primary-700 hover:underline"
+              >
+                Open screenshot in new tab
+              </a>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500">
+              No pre-submit screenshot exists for this request yet.
+            </p>
+          )}
         </CardBody>
       </Card>
 

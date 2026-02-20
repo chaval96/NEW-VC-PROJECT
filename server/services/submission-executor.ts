@@ -1,4 +1,7 @@
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import type { SubmissionRequest, SubmissionStatus } from "../domain/types.js";
+import { buildPreSubmitScreenshotRelativePath, resolveEvidenceAbsolutePath } from "./execution-evidence.js";
 
 export interface SubmissionExecutionResult {
   status: SubmissionStatus;
@@ -7,24 +10,38 @@ export interface SubmissionExecutionResult {
   discoveredAt?: string;
   filledAt?: string;
   submittedAt?: string;
+  executionMode: "simulated" | "automated";
+  proofLevel: "none" | "pre_submit_screenshot" | "submitted_confirmation";
+  preSubmitScreenshotPath?: string;
+  preSubmitScreenshotCapturedAt?: string;
+  submittedVerified?: boolean;
 }
 
 function nowIso(): string {
   return new Date().toISOString();
 }
 
-export async function executeSubmissionRequest(request: SubmissionRequest): Promise<SubmissionExecutionResult> {
+interface ExecutionOptions {
+  attempt: number;
+}
+
+export async function executeSubmissionRequest(
+  request: SubmissionRequest,
+  options: ExecutionOptions
+): Promise<SubmissionExecutionResult> {
   const moduleName = "playwright";
   const enablePlaywright = process.env.PLAYWRIGHT_ENABLED === "true";
   const enableSubmit = process.env.PLAYWRIGHT_SUBMIT_ENABLED === "true";
 
   if (!enablePlaywright) {
     return {
-      status: request.mode === "production" ? "submitted" : "form_filled",
-      note: "Playwright disabled. Simulated approved submission execution.",
-      discoveredAt: nowIso(),
-      filledAt: nowIso(),
-      submittedAt: request.mode === "production" ? nowIso() : undefined
+      status: request.mode === "dry_run" ? "form_filled" : "needs_review",
+      note: "Playwright is disabled. No live browser execution was performed.",
+      discoveredAt: request.mode === "dry_run" ? nowIso() : undefined,
+      filledAt: request.mode === "dry_run" ? nowIso() : undefined,
+      executionMode: "simulated",
+      proofLevel: "none",
+      submittedVerified: false
     };
   }
 
@@ -41,7 +58,10 @@ export async function executeSubmissionRequest(request: SubmissionRequest): Prom
       return {
         status: "blocked",
         note: "CAPTCHA detected during submission attempt.",
-        blockedReason: "CAPTCHA Blocked"
+        blockedReason: "CAPTCHA Blocked",
+        executionMode: "automated",
+        proofLevel: "none",
+        submittedVerified: false
       };
     }
 
@@ -50,7 +70,10 @@ export async function executeSubmissionRequest(request: SubmissionRequest): Prom
       await browser.close();
       return {
         status: "no_form_found",
-        note: "No form element found on target page."
+        note: "No form element found on target page.",
+        executionMode: "automated",
+        proofLevel: "none",
+        submittedVerified: false
       };
     }
 
@@ -71,25 +94,54 @@ export async function executeSubmissionRequest(request: SubmissionRequest): Prom
 
     const discoveredAt = nowIso();
     const filledAt = nowIso();
+    let preSubmitScreenshotPath: string | undefined;
+    let preSubmitScreenshotCapturedAt: string | undefined;
+
+    try {
+      const relativePath = buildPreSubmitScreenshotRelativePath(request.workspaceId, request.id, options.attempt);
+      const absolutePath = resolveEvidenceAbsolutePath(relativePath);
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await page.screenshot({ path: absolutePath, fullPage: true });
+      preSubmitScreenshotPath = relativePath;
+      preSubmitScreenshotCapturedAt = nowIso();
+    } catch {
+      preSubmitScreenshotPath = undefined;
+      preSubmitScreenshotCapturedAt = undefined;
+    }
 
     if (!enableSubmit) {
       await browser.close();
+      const proofLevel = preSubmitScreenshotPath ? "pre_submit_screenshot" : "none";
       return {
-        status: "form_filled",
-        note: "Playwright ran in fill-only mode. Enable PLAYWRIGHT_SUBMIT_ENABLED=true to submit.",
+        status: request.mode === "dry_run" ? "form_filled" : "needs_review",
+        note:
+          request.mode === "dry_run"
+            ? "Form filled in dry-run mode with pre-submit evidence."
+            : "Form filled, but submit action is disabled. Requires manual review.",
         discoveredAt,
-        filledAt
+        filledAt,
+        executionMode: "automated",
+        proofLevel,
+        preSubmitScreenshotPath,
+        preSubmitScreenshotCapturedAt,
+        submittedVerified: false
       };
     }
 
     const submitButton = await page.$('button[type="submit"], input[type="submit"]');
     if (!submitButton) {
       await browser.close();
+      const proofLevel = preSubmitScreenshotPath ? "pre_submit_screenshot" : "none";
       return {
         status: "needs_review",
         note: "Form found and filled, but no submit button located.",
         discoveredAt,
-        filledAt
+        filledAt,
+        executionMode: "automated",
+        proofLevel,
+        preSubmitScreenshotPath,
+        preSubmitScreenshotCapturedAt,
+        submittedVerified: false
       };
     }
 
@@ -105,31 +157,47 @@ export async function executeSubmissionRequest(request: SubmissionRequest): Prom
         note: "Form submission confirmed by success-like response text.",
         discoveredAt,
         filledAt,
-        submittedAt: nowIso()
+        submittedAt: nowIso(),
+        executionMode: "automated",
+        proofLevel: "submitted_confirmation",
+        preSubmitScreenshotPath,
+        preSubmitScreenshotCapturedAt,
+        submittedVerified: true
       };
     }
 
+    const proofLevel = preSubmitScreenshotPath ? "pre_submit_screenshot" : "none";
     return {
       status: "needs_review",
       note: "Submit clicked but success confirmation not detected. Requires manual check.",
       discoveredAt,
-      filledAt
+      filledAt,
+      executionMode: "automated",
+      proofLevel,
+      preSubmitScreenshotPath,
+      preSubmitScreenshotCapturedAt,
+      submittedVerified: false
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown submission error";
     if (message.toLowerCase().includes("cannot find package") || message.toLowerCase().includes("cannot find module")) {
       return {
-        status: request.mode === "production" ? "submitted" : "form_filled",
-        note: "Playwright package is not installed in this environment. Falling back to simulated execution.",
-        discoveredAt: nowIso(),
-        filledAt: nowIso(),
-        submittedAt: request.mode === "production" ? nowIso() : undefined
+        status: request.mode === "dry_run" ? "form_filled" : "needs_review",
+        note: "Playwright package is not installed in this environment. No live submission was executed.",
+        discoveredAt: request.mode === "dry_run" ? nowIso() : undefined,
+        filledAt: request.mode === "dry_run" ? nowIso() : undefined,
+        executionMode: "simulated",
+        proofLevel: "none",
+        submittedVerified: false
       };
     }
 
     return {
       status: "errored",
-      note: `Submission execution failed: ${message}`
+      note: `Submission execution failed: ${message}`,
+      executionMode: "automated",
+      proofLevel: "none",
+      submittedVerified: false
     };
   }
 }

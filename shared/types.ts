@@ -75,6 +75,7 @@ export interface Firm {
 export interface SubmissionEvent {
   id: string;
   workspaceId: string;
+  requestId?: string;
   firmId: string;
   firmName: string;
   channel: SubmissionChannel;
@@ -85,6 +86,11 @@ export interface SubmissionEvent {
   submittedAt?: string;
   blockedReason?: string;
   note?: string;
+  executionMode?: "simulated" | "automated";
+  proofLevel?: "none" | "pre_submit_screenshot" | "submitted_confirmation";
+  preSubmitScreenshotPath?: string;
+  preSubmitScreenshotCapturedAt?: string;
+  submittedVerified?: boolean;
 }
 
 export interface SubmissionRequest {
@@ -121,6 +127,11 @@ export interface SubmissionRequest {
   lastExecutionStatus?: SubmissionStatus;
   nextRetryAt?: string;
   resultNote?: string;
+  executionMode?: "simulated" | "automated";
+  proofLevel?: "none" | "pre_submit_screenshot" | "submitted_confirmation";
+  preSubmitScreenshotPath?: string;
+  preSubmitScreenshotCapturedAt?: string;
+  submittedVerified?: boolean;
 }
 
 export interface ImportBatch {

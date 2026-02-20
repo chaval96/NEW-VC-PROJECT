@@ -140,6 +140,13 @@ CREATE TABLE IF NOT EXISTS submission_requests_operational (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE submission_requests_operational
+  ADD COLUMN IF NOT EXISTS execution_mode TEXT,
+  ADD COLUMN IF NOT EXISTS proof_level TEXT,
+  ADD COLUMN IF NOT EXISTS pre_submit_screenshot_path TEXT,
+  ADD COLUMN IF NOT EXISTS pre_submit_screenshot_captured_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS submitted_verified BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS submission_events_operational (
   id UUID PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -155,6 +162,14 @@ CREATE TABLE IF NOT EXISTS submission_events_operational (
   note TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE submission_events_operational
+  ADD COLUMN IF NOT EXISTS request_id UUID,
+  ADD COLUMN IF NOT EXISTS execution_mode TEXT,
+  ADD COLUMN IF NOT EXISTS proof_level TEXT,
+  ADD COLUMN IF NOT EXISTS pre_submit_screenshot_path TEXT,
+  ADD COLUMN IF NOT EXISTS pre_submit_screenshot_captured_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS submitted_verified BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_projects_owner_user_id ON projects(owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_investors_project_id ON investors(project_id);

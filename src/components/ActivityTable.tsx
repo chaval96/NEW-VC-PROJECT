@@ -1,13 +1,15 @@
 import dayjs from "dayjs";
+import { Link } from "react-router-dom";
 import type { SubmissionEvent } from "@shared/types";
 import { Card, CardBody, CardHeader } from "./ui/Card";
 import { StatusPill } from "./ui/StatusPill";
 
 interface ActivityTableProps {
   events: SubmissionEvent[];
+  workspaceId?: string;
 }
 
-export function ActivityTable({ events }: ActivityTableProps): JSX.Element {
+export function ActivityTable({ events, workspaceId }: ActivityTableProps): JSX.Element {
   return (
     <Card>
       <CardHeader>
@@ -20,6 +22,7 @@ export function ActivityTable({ events }: ActivityTableProps): JSX.Element {
               <tr className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-left dark:border-slate-700 dark:bg-slate-800">
                 <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Company</th>
                 <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Status</th>
+                <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Proof</th>
                 <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Attempted</th>
                 <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Last Milestone</th>
                 <th className="px-5 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Blocked Reason</th>
@@ -35,16 +38,37 @@ export function ActivityTable({ events }: ActivityTableProps): JSX.Element {
                     <td className="px-5 py-2">
                       <StatusPill status={event.status} />
                     </td>
+                    <td className="px-5 py-2 text-xs text-slate-500 dark:text-slate-400">
+                      {event.proofLevel === "submitted_confirmation"
+                        ? "Submitted confirmed"
+                        : event.proofLevel === "pre_submit_screenshot"
+                          ? "Screenshot captured"
+                          : event.executionMode === "simulated"
+                            ? "Simulated only"
+                            : "No proof"}
+                    </td>
                     <td className="px-5 py-2 text-slate-500 dark:text-slate-400">{dayjs(event.attemptedAt).format("MMM D, YYYY HH:mm")}</td>
                     <td className="px-5 py-2 text-slate-500 dark:text-slate-400">{dayjs(lastMilestone).format("MMM D, YYYY HH:mm")}</td>
                     <td className="px-5 py-2 text-slate-500 dark:text-slate-400">{event.blockedReason ?? "-"}</td>
-                    <td className="px-5 py-2 text-slate-500 dark:text-slate-400 max-w-xs truncate">{event.note ?? "-"}</td>
+                    <td className="px-5 py-2 text-slate-500 dark:text-slate-400 max-w-xs truncate">
+                      {event.note ?? "-"}
+                      {workspaceId && event.requestId ? (
+                        <span className="ml-2">
+                          <Link
+                            to={`/projects/${workspaceId}/submissions/${event.requestId}`}
+                            className="font-medium text-primary-700 hover:underline"
+                          >
+                            View
+                          </Link>
+                        </span>
+                      ) : null}
+                    </td>
                   </tr>
                 );
               })}
               {events.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-5 py-8 text-center text-slate-400 dark:text-slate-500">
+                  <td colSpan={7} className="px-5 py-8 text-center text-slate-400 dark:text-slate-500">
                     No activity yet.
                   </td>
                 </tr>

@@ -1,6 +1,7 @@
 import cors from "cors";
 import dayjs from "dayjs";
 import express from "express";
+import { access } from "node:fs/promises";
 import path from "node:path";
 import { URL } from "node:url";
 import { v4 as uuid } from "uuid";
@@ -15,6 +16,7 @@ import { CreditService } from "./services/credit-service.js";
 import { normalizeFirmIdentity, normalizeListKey, normalizeListName } from "./services/firm-normalization.js";
 import { parseFirmsFromGoogleDriveLink, parseFirmsFromUpload } from "./services/import-parser.js";
 import { researchLead } from "./services/lead-research.js";
+import { resolveEvidenceAbsolutePath } from "./services/execution-evidence.js";
 import { executeSubmissionRequest, type SubmissionExecutionResult } from "./services/submission-executor.js";
 
 const app = express();
@@ -463,6 +465,79 @@ function cleanupWorkspaceImports(workspaceId: string): number {
   return removed;
 }
 
+function looksSimulatedExecutionNote(note?: string): boolean {
+  const text = (note ?? "").toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("simulated") ||
+    text.includes("playwright disabled") ||
+    text.includes("playwright is disabled") ||
+    text.includes("package is not installed") ||
+    text.includes("no live browser execution")
+  );
+}
+
+function normalizeWorkspaceSubmissionEvidence(workspaceId: string): { requests: number; events: number } {
+  let requests = 0;
+  let events = 0;
+
+  for (const request of store.listSubmissionRequests(workspaceId)) {
+    const shouldNormalize =
+      request.lastExecutionStatus === "submitted" &&
+      request.submittedVerified !== true &&
+      looksSimulatedExecutionNote(request.resultNote);
+    if (!shouldNormalize) continue;
+
+    const updated = store.updateSubmissionRequest(workspaceId, request.id, (current) => ({
+      ...current,
+      status: current.status === "completed" ? "failed" : current.status,
+      lastExecutionStatus: "needs_review",
+      resultNote: "Historical record converted: no verified live submission proof. Requires manual review.",
+      executionMode: "simulated",
+      proofLevel: "none",
+      preSubmitScreenshotPath: current.preSubmitScreenshotPath,
+      preSubmitScreenshotCapturedAt: current.preSubmitScreenshotCapturedAt,
+      submittedVerified: false
+    }));
+    if (updated) {
+      requests += 1;
+      const firm = store.getFirm(updated.firmId, workspaceId);
+      if (firm && (firm.stage === "submitted" || firm.stage === "won")) {
+        store.upsertFirm({
+          ...firm,
+          stage: "review",
+          statusReason: "Historical submission had no verified proof. Requires manual review.",
+          lastTouchedAt: new Date().toISOString()
+        });
+      }
+    }
+  }
+
+  const normalizedEvents = store.listEvents(workspaceId).map((event) => {
+    const shouldNormalize =
+      event.status === "submitted" &&
+      event.submittedVerified !== true &&
+      looksSimulatedExecutionNote(event.note);
+    if (!shouldNormalize) return event;
+    events += 1;
+    return {
+      ...event,
+      status: "needs_review" as const,
+      submittedAt: undefined,
+      note: "Historical record converted: no verified live submission proof.",
+      executionMode: "simulated" as const,
+      proofLevel: "none" as const,
+      submittedVerified: false
+    };
+  });
+
+  if (events > 0) {
+    store.replaceWorkspaceEvents(workspaceId, normalizedEvents);
+  }
+
+  return { requests, events };
+}
+
 async function runWorkspaceMaintenance(workspaceId: string): Promise<{ removedDuplicates: number; removedEmptyBatches: number }> {
   normalizeWorkspaceListNames(workspaceId);
   for (const firm of store.listFirms(workspaceId)) {
@@ -477,6 +552,7 @@ async function runWorkspaceMaintenance(workspaceId: string): Promise<{ removedDu
   }
   const dedupe = dedupeWorkspaceFirms(workspaceId);
   const removedEmptyBatches = cleanupWorkspaceImports(workspaceId);
+  normalizeWorkspaceSubmissionEvidence(workspaceId);
   await store.persist();
   return {
     removedDuplicates: dedupe.removed,
@@ -701,13 +777,14 @@ async function executeSubmissionWithRetries(
 
     await store.persist();
 
-    const result = await executeSubmissionRequest(executing);
+    const result = await executeSubmissionRequest(executing, { attempt: attempts });
     lastResult = result;
     const endedAt = new Date().toISOString();
 
     store.addEvent({
       id: uuid(),
       workspaceId,
+      requestId: executing.id,
       firmId: executing.firmId,
       firmName: executing.firmName,
       channel: "website_form",
@@ -717,7 +794,12 @@ async function executeSubmissionWithRetries(
       filledAt: result.filledAt,
       submittedAt: result.submittedAt,
       blockedReason: result.blockedReason,
-      note: `Attempt ${attempts}/${maxAttempts}: ${result.note}`
+      note: `Attempt ${attempts}/${maxAttempts}: ${result.note}`,
+      executionMode: result.executionMode,
+      proofLevel: result.proofLevel,
+      preSubmitScreenshotPath: result.preSubmitScreenshotPath,
+      preSubmitScreenshotCapturedAt: result.preSubmitScreenshotCapturedAt,
+      submittedVerified: result.submittedVerified
     });
 
     if (isSubmissionSuccess(result.status)) {
@@ -730,7 +812,12 @@ async function executeSubmissionWithRetries(
         lastExecutionEndedAt: endedAt,
         lastExecutionStatus: result.status,
         resultNote: result.note,
-        nextRetryAt: undefined
+        nextRetryAt: undefined,
+        executionMode: result.executionMode,
+        proofLevel: result.proofLevel,
+        preSubmitScreenshotPath: result.preSubmitScreenshotPath,
+        preSubmitScreenshotCapturedAt: result.preSubmitScreenshotCapturedAt,
+        submittedVerified: result.submittedVerified
       }));
       if (completed) {
         updateFirmFromExecution(workspaceId, requestId, completed, result);
@@ -750,7 +837,12 @@ async function executeSubmissionWithRetries(
         lastExecutionEndedAt: endedAt,
         lastExecutionStatus: result.status,
         resultNote: `${result.note} Auto-retrying soon (${attempts}/${maxAttempts}).`,
-        nextRetryAt
+        nextRetryAt,
+        executionMode: result.executionMode,
+        proofLevel: result.proofLevel,
+        preSubmitScreenshotPath: result.preSubmitScreenshotPath,
+        preSubmitScreenshotCapturedAt: result.preSubmitScreenshotCapturedAt,
+        submittedVerified: result.submittedVerified
       }));
       await store.persist();
       await sleep(submissionRetryDelayMs);
@@ -766,7 +858,12 @@ async function executeSubmissionWithRetries(
       lastExecutionEndedAt: endedAt,
       lastExecutionStatus: result.status,
       resultNote: result.note,
-      nextRetryAt: undefined
+      nextRetryAt: undefined,
+      executionMode: result.executionMode,
+      proofLevel: result.proofLevel,
+      preSubmitScreenshotPath: result.preSubmitScreenshotPath,
+      preSubmitScreenshotCapturedAt: result.preSubmitScreenshotCapturedAt,
+      submittedVerified: result.submittedVerified
     }));
     if (failed) {
       updateFirmFromExecution(workspaceId, requestId, failed, result);
@@ -777,7 +874,10 @@ async function executeSubmissionWithRetries(
 
   const fallbackResult: SubmissionExecutionResult = lastResult ?? {
     status: "errored",
-    note: "Submission exhausted retry budget without a successful result."
+    note: "Submission exhausted retry budget without a successful result.",
+    executionMode: "automated",
+    proofLevel: "none",
+    submittedVerified: false
   };
   return { request: store.getSubmissionRequest(requestId, workspaceId), result: fallbackResult };
 }
@@ -2025,6 +2125,34 @@ app.get(
       firm,
       events
     });
+  })
+);
+
+app.get(
+  "/api/submissions/:id/evidence/pre-submit",
+  asyncHandler(async (req, res) => {
+    const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const request = store.getSubmissionRequest(req.params.id, workspaceId);
+    if (!request) {
+      res.status(404).json({ message: "Submission request not found" });
+      return;
+    }
+    if (!request.preSubmitScreenshotPath) {
+      res.status(404).json({ message: "No pre-submit screenshot captured for this request" });
+      return;
+    }
+
+    let absolutePath = "";
+    try {
+      absolutePath = resolveEvidenceAbsolutePath(request.preSubmitScreenshotPath);
+      await access(absolutePath);
+    } catch {
+      res.status(404).json({ message: "Pre-submit screenshot file is not available" });
+      return;
+    }
+
+    res.setHeader("Cache-Control", "private, max-age=60");
+    res.sendFile(absolutePath);
   })
 );
 
