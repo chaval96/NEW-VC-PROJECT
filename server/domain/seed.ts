@@ -105,6 +105,8 @@ const firmSeed = [
   ["Appalachian Investors Alliance", "https://appalachianinvestors.org/", "US", "Syndicate", "$250K-$2M", ["SaaS", "AI"]]
 ] as const;
 
+export const SEED_FIRM_WEBSITES = firmSeed.map((entry) => entry[1]);
+
 function generateFirms(workspaceId: string): Firm[] {
   return firmSeed.map((entry, index) => {
     const [name, website, geography, investorType, checkSizeRange, focusSectors] = entry;

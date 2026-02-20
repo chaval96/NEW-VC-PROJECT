@@ -93,6 +93,12 @@ Optional reliability controls (cheap defaults already enabled):
 - `OPS_STALE_EXECUTION_MINUTES=10`
 - `OPS_ALERT_WINDOW_HOURS=24`
 
+Optional storage maintenance (Postgres compaction and data pruning):
+
+- `RUN_STORAGE_CLEANUP_ON_BOOT=false`
+- `RUN_STORAGE_CLEANUP_VACUUM=true`
+- `RUN_STORAGE_CLEANUP_FULL=false` (`true` runs `VACUUM FULL` on `app_state`)
+
 Optional feature flags (disabled by default for lower cost):
 
 - `FEATURE_CREDITS=true`
@@ -133,6 +139,8 @@ Workspace + operations:
 - `POST /api/submissions/:id/approve?workspaceId=...`
 - `POST /api/submissions/:id/reject?workspaceId=...`
 - `POST /api/runs` (body includes `workspaceId`)
+- `GET /api/admin/storage-report`
+- `POST /api/admin/storage-cleanup`
 
 Optional endpoints (only when feature flags are enabled):
 

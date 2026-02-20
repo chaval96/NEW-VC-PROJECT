@@ -166,6 +166,99 @@ export function logout(): Promise<{ ok: true }> {
   return api<{ ok: true }>("/api/auth/logout", { method: "POST" });
 }
 
+export interface AdminStorageReport {
+  generatedAt: string;
+  stateApproxBytes: number;
+  storage: {
+    usingPostgres: boolean;
+    databaseName?: string;
+    databaseSizeBytes?: number;
+    appStateTableTotalBytes?: number;
+    appStatePayloadBytes?: number;
+    appStateDeadTuples?: number;
+    localStateFileBytes?: number;
+    tableStats: Array<{
+      tableName: string;
+      totalBytes: number;
+      tableBytes: number;
+      indexBytes: number;
+      toastBytes: number;
+      liveTuples: number;
+      deadTuples: number;
+    }>;
+  };
+  workspaces: Array<{
+    workspaceId: string;
+    name: string;
+    totalBytes: number;
+    footprint: {
+      firmsCount: number;
+      eventsCount: number;
+      requestsCount: number;
+      tasksCount: number;
+      logsCount: number;
+      runsCount: number;
+      batchesCount: number;
+      assessmentsCount: number;
+      firmsBytes: number;
+      eventsBytes: number;
+      requestsBytes: number;
+      tasksBytes: number;
+      logsBytes: number;
+      runsBytes: number;
+      batchesBytes: number;
+      assessmentsBytes: number;
+    };
+  }>;
+}
+
+export interface AdminStorageCleanupResponse {
+  before: AdminStorageReport;
+  after: AdminStorageReport;
+  workspaceResults: Array<{
+    workspaceId: string;
+    name: string;
+    maintenance: {
+      removedDuplicates: number;
+      removedEmptyBatches: number;
+      removedSeedFirms: number;
+      removedSeedEvents: number;
+      removedSeedRequests: number;
+      removedSeedTasks: number;
+      removedSeedLogs: number;
+      removedLogs: number;
+      removedTasks: number;
+      removedRuns: number;
+      removedAssessments: number;
+      removedEvents: number;
+      removedRequests: number;
+      removedImportBatches: number;
+    };
+  }>;
+  authCleanup: {
+    removedSessions: number;
+    removedVerificationTokens: number;
+    removedPasswordResetTokens: number;
+    removedAuditLogs: number;
+  } | null;
+}
+
+export function getAdminStorageReport(): Promise<AdminStorageReport> {
+  return api<AdminStorageReport>("/api/admin/storage-report");
+}
+
+export function runAdminStorageCleanup(payload: {
+  workspaceIds?: string[];
+  dryRun?: boolean;
+  vacuum?: boolean;
+  vacuumFull?: boolean;
+} = {}): Promise<AdminStorageCleanupResponse> {
+  return api<AdminStorageCleanupResponse>("/api/admin/storage-cleanup", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function getWorkspaces(): Promise<WorkspacesResponse> {
   return api<WorkspacesResponse>("/api/workspaces");
 }

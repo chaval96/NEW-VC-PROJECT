@@ -9,6 +9,63 @@ const dataDir = path.resolve("server/data");
 const dataPath = path.join(dataDir, "state.json");
 const stateRowId = 1;
 
+export interface TableStorageStat {
+  tableName: string;
+  totalBytes: number;
+  tableBytes: number;
+  indexBytes: number;
+  toastBytes: number;
+  liveTuples: number;
+  deadTuples: number;
+}
+
+export interface StorageSnapshot {
+  usingPostgres: boolean;
+  databaseName?: string;
+  databaseSizeBytes?: number;
+  appStateTableTotalBytes?: number;
+  appStatePayloadBytes?: number;
+  appStateDeadTuples?: number;
+  tableStats: TableStorageStat[];
+  localStateFileBytes?: number;
+}
+
+export interface HistoryPruneOptions {
+  maxLogsPerWorkspace?: number;
+  maxTasksPerWorkspace?: number;
+  maxRunsPerWorkspace?: number;
+  maxAssessmentsPerWorkspace?: number;
+  maxEventsPerWorkspace?: number;
+  maxRequestsPerWorkspace?: number;
+  logRetentionDays?: number;
+  taskRetentionDays?: number;
+  runRetentionDays?: number;
+  assessmentRetentionDays?: number;
+  eventRetentionDays?: number;
+  requestRetentionDays?: number;
+  zeroImportBatchRetentionDays?: number;
+}
+
+export interface HistoryPruneResult {
+  removedLogs: number;
+  removedTasks: number;
+  removedRuns: number;
+  removedAssessments: number;
+  removedEvents: number;
+  removedRequests: number;
+  removedImportBatches: number;
+}
+
+function toTimestamp(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function byteLength(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
 function migrateLegacyState(raw: any): AppState {
   if (raw && Array.isArray(raw.workspaces)) {
     return raw as AppState;
@@ -119,6 +176,269 @@ export class StateStore {
       this.state = createSeedState();
     }
     await this.persist();
+  }
+
+  isUsingPostgres(): boolean {
+    return Boolean(this.pool);
+  }
+
+  async getStorageSnapshot(): Promise<StorageSnapshot> {
+    if (!this.pool) {
+      let localStateFileBytes = 0;
+      try {
+        const raw = await readFile(dataPath, "utf8");
+        localStateFileBytes = Buffer.byteLength(raw, "utf8");
+      } catch {
+        localStateFileBytes = byteLength(this.state);
+      }
+
+      return {
+        usingPostgres: false,
+        localStateFileBytes,
+        tableStats: []
+      };
+    }
+
+    const dbResult = await this.pool.query<{ database_name: string; database_size_bytes: string }>(
+      `SELECT current_database() AS database_name, pg_database_size(current_database())::bigint::text AS database_size_bytes`
+    );
+    const dbRow = dbResult.rows[0];
+
+    const appStateResult = await this.pool.query<{
+      total_bytes: string;
+      payload_bytes: string;
+      dead_tuples: string;
+    }>(
+      `
+        SELECT
+          pg_total_relation_size('app_state')::bigint::text AS total_bytes,
+          COALESCE((SELECT octet_length(payload::text)::bigint::text FROM app_state WHERE id = $1), '0') AS payload_bytes,
+          COALESCE((SELECT n_dead_tup::bigint::text FROM pg_stat_user_tables WHERE relname = 'app_state'), '0') AS dead_tuples
+      `,
+      [stateRowId]
+    );
+
+    const tableResult = await this.pool.query<{
+      table_name: string;
+      total_bytes: string;
+      table_bytes: string;
+      index_bytes: string;
+      toast_bytes: string;
+      live_tuples: string;
+      dead_tuples: string;
+    }>(
+      `
+        SELECT
+          c.relname AS table_name,
+          pg_total_relation_size(c.oid)::bigint::text AS total_bytes,
+          pg_relation_size(c.oid)::bigint::text AS table_bytes,
+          pg_indexes_size(c.oid)::bigint::text AS index_bytes,
+          CASE
+            WHEN c.reltoastrelid = 0 THEN '0'
+            ELSE pg_total_relation_size(c.reltoastrelid)::bigint::text
+          END AS toast_bytes,
+          COALESCE(s.n_live_tup, 0)::bigint::text AS live_tuples,
+          COALESCE(s.n_dead_tup, 0)::bigint::text AS dead_tuples
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+        WHERE c.relkind = 'r' AND n.nspname = 'public'
+        ORDER BY pg_total_relation_size(c.oid) DESC
+      `
+    );
+
+    const appStateRow = appStateResult.rows[0];
+
+    return {
+      usingPostgres: true,
+      databaseName: dbRow?.database_name,
+      databaseSizeBytes: Number(dbRow?.database_size_bytes ?? 0),
+      appStateTableTotalBytes: Number(appStateRow?.total_bytes ?? 0),
+      appStatePayloadBytes: Number(appStateRow?.payload_bytes ?? 0),
+      appStateDeadTuples: Number(appStateRow?.dead_tuples ?? 0),
+      tableStats: tableResult.rows.map((row) => ({
+        tableName: row.table_name,
+        totalBytes: Number(row.total_bytes),
+        tableBytes: Number(row.table_bytes),
+        indexBytes: Number(row.index_bytes),
+        toastBytes: Number(row.toast_bytes),
+        liveTuples: Number(row.live_tuples),
+        deadTuples: Number(row.dead_tuples)
+      }))
+    };
+  }
+
+  pruneWorkspaceHistory(workspaceId: string, options: HistoryPruneOptions = {}): HistoryPruneResult {
+    const now = Date.now();
+    const maxLogs = Math.max(100, options.maxLogsPerWorkspace ?? 3000);
+    const maxTasks = Math.max(100, options.maxTasksPerWorkspace ?? 3000);
+    const maxRuns = Math.max(50, options.maxRunsPerWorkspace ?? 1200);
+    const maxAssessments = Math.max(20, options.maxAssessmentsPerWorkspace ?? 500);
+    const maxEvents = Math.max(200, options.maxEventsPerWorkspace ?? 12000);
+    const maxRequests = Math.max(100, options.maxRequestsPerWorkspace ?? 8000);
+
+    const logsCutoff = now - Math.max(1, options.logRetentionDays ?? 45) * 24 * 60 * 60 * 1000;
+    const tasksCutoff = now - Math.max(1, options.taskRetentionDays ?? 45) * 24 * 60 * 60 * 1000;
+    const runsCutoff = now - Math.max(1, options.runRetentionDays ?? 180) * 24 * 60 * 60 * 1000;
+    const assessmentCutoff = now - Math.max(1, options.assessmentRetentionDays ?? 180) * 24 * 60 * 60 * 1000;
+    const eventsCutoff = now - Math.max(1, options.eventRetentionDays ?? 180) * 24 * 60 * 60 * 1000;
+    const requestsCutoff = now - Math.max(1, options.requestRetentionDays ?? 180) * 24 * 60 * 60 * 1000;
+    const zeroBatchCutoff = now - Math.max(1, options.zeroImportBatchRetentionDays ?? 21) * 24 * 60 * 60 * 1000;
+
+    const currentLogs = this.state.logs.filter((log) => log.workspaceId === workspaceId);
+    const keepLogs = currentLogs
+      .filter((log) => toTimestamp(log.timestamp) >= logsCutoff)
+      .sort((a, b) => toTimestamp(b.timestamp) - toTimestamp(a.timestamp))
+      .slice(0, maxLogs);
+    const keepLogIds = new Set(keepLogs.map((log) => log.id));
+    this.state.logs = this.state.logs.filter((log) => log.workspaceId !== workspaceId || keepLogIds.has(log.id));
+
+    const currentTasks = this.state.tasks.filter((task) => task.workspaceId === workspaceId);
+    const keepTasks = currentTasks
+      .filter((task) => toTimestamp(task.startedAt) >= tasksCutoff)
+      .sort((a, b) => toTimestamp(b.startedAt) - toTimestamp(a.startedAt))
+      .slice(0, maxTasks);
+    const keepTaskIds = new Set(keepTasks.map((task) => task.id));
+    this.state.tasks = this.state.tasks.filter((task) => task.workspaceId !== workspaceId || keepTaskIds.has(task.id));
+
+    const currentRuns = this.state.runs.filter((run) => run.workspaceId === workspaceId);
+    const keepRuns = currentRuns
+      .filter((run) => run.status === "running" || toTimestamp(run.startedAt) >= runsCutoff)
+      .sort((a, b) => toTimestamp(b.startedAt) - toTimestamp(a.startedAt))
+      .slice(0, maxRuns);
+    const keepRunIds = new Set(keepRuns.map((run) => run.id));
+    this.state.runs = this.state.runs.filter((run) => run.workspaceId !== workspaceId || keepRunIds.has(run.id));
+
+    const currentAssessments = this.state.assessments.filter((assessment) => assessment.workspaceId === workspaceId);
+    const keepAssessments = currentAssessments
+      .filter((assessment) => toTimestamp(assessment.startedAt) >= assessmentCutoff)
+      .sort((a, b) => toTimestamp(b.startedAt) - toTimestamp(a.startedAt))
+      .slice(0, maxAssessments);
+    const keepAssessmentIds = new Set(keepAssessments.map((assessment) => assessment.id));
+    this.state.assessments = this.state.assessments.filter(
+      (assessment) => assessment.workspaceId !== workspaceId || keepAssessmentIds.has(assessment.id)
+    );
+
+    const currentEvents = this.state.submissionEvents.filter((event) => event.workspaceId === workspaceId);
+    const keepEvents = currentEvents
+      .filter((event) => toTimestamp(event.attemptedAt) >= eventsCutoff)
+      .sort((a, b) => toTimestamp(b.attemptedAt) - toTimestamp(a.attemptedAt))
+      .slice(0, maxEvents);
+    const keepEventIds = new Set(keepEvents.map((event) => event.id));
+    this.state.submissionEvents = this.state.submissionEvents.filter(
+      (event) => event.workspaceId !== workspaceId || keepEventIds.has(event.id)
+    );
+
+    const currentRequests = this.state.submissionRequests.filter((request) => request.workspaceId === workspaceId);
+    const keepRequests = currentRequests
+      .filter((request) => {
+        if (!["completed", "failed", "rejected"].includes(request.status)) return true;
+        return toTimestamp(request.preparedAt) >= requestsCutoff;
+      })
+      .sort((a, b) => toTimestamp(b.preparedAt) - toTimestamp(a.preparedAt))
+      .slice(0, maxRequests);
+    const keepRequestIds = new Set(keepRequests.map((request) => request.id));
+    this.state.submissionRequests = this.state.submissionRequests.filter(
+      (request) => request.workspaceId !== workspaceId || keepRequestIds.has(request.id)
+    );
+
+    const currentBatches = this.state.importBatches.filter((batch) => batch.workspaceId === workspaceId);
+    const seenImportKeys = new Set<string>();
+    const keepBatches: ImportBatch[] = [];
+    for (const batch of currentBatches.sort((a, b) => toTimestamp(b.importedAt) - toTimestamp(a.importedAt))) {
+      const staleZeroBatch = batch.importedCount === 0 && toTimestamp(batch.importedAt) < zeroBatchCutoff;
+      if (staleZeroBatch) continue;
+
+      const dedupeKey = `${batch.sourceName.trim().toLowerCase()}|${batch.sourceType}|${batch.status}|${batch.importedCount}|${batch.note ?? ""}`;
+      if (seenImportKeys.has(dedupeKey)) continue;
+      seenImportKeys.add(dedupeKey);
+      keepBatches.push(batch);
+    }
+    const keepBatchIds = new Set(keepBatches.map((batch) => batch.id));
+    this.state.importBatches = this.state.importBatches.filter(
+      (batch) => batch.workspaceId !== workspaceId || keepBatchIds.has(batch.id)
+    );
+
+    return {
+      removedLogs: currentLogs.length - keepLogs.length,
+      removedTasks: currentTasks.length - keepTasks.length,
+      removedRuns: currentRuns.length - keepRuns.length,
+      removedAssessments: currentAssessments.length - keepAssessments.length,
+      removedEvents: currentEvents.length - keepEvents.length,
+      removedRequests: currentRequests.length - keepRequests.length,
+      removedImportBatches: currentBatches.length - keepBatches.length
+    };
+  }
+
+  getWorkspaceStateFootprint(workspaceId: string): {
+    firmsCount: number;
+    eventsCount: number;
+    requestsCount: number;
+    tasksCount: number;
+    logsCount: number;
+    runsCount: number;
+    batchesCount: number;
+    assessmentsCount: number;
+    firmsBytes: number;
+    eventsBytes: number;
+    requestsBytes: number;
+    tasksBytes: number;
+    logsBytes: number;
+    runsBytes: number;
+    batchesBytes: number;
+    assessmentsBytes: number;
+  } {
+    const firms = this.state.firms.filter((item) => item.workspaceId === workspaceId);
+    const events = this.state.submissionEvents.filter((item) => item.workspaceId === workspaceId);
+    const requests = this.state.submissionRequests.filter((item) => item.workspaceId === workspaceId);
+    const tasks = this.state.tasks.filter((item) => item.workspaceId === workspaceId);
+    const logs = this.state.logs.filter((item) => item.workspaceId === workspaceId);
+    const runs = this.state.runs.filter((item) => item.workspaceId === workspaceId);
+    const batches = this.state.importBatches.filter((item) => item.workspaceId === workspaceId);
+    const assessments = this.state.assessments.filter((item) => item.workspaceId === workspaceId);
+
+    return {
+      firmsCount: firms.length,
+      eventsCount: events.length,
+      requestsCount: requests.length,
+      tasksCount: tasks.length,
+      logsCount: logs.length,
+      runsCount: runs.length,
+      batchesCount: batches.length,
+      assessmentsCount: assessments.length,
+      firmsBytes: byteLength(firms),
+      eventsBytes: byteLength(events),
+      requestsBytes: byteLength(requests),
+      tasksBytes: byteLength(tasks),
+      logsBytes: byteLength(logs),
+      runsBytes: byteLength(runs),
+      batchesBytes: byteLength(batches),
+      assessmentsBytes: byteLength(assessments)
+    };
+  }
+
+  async compactPostgresStorage(options: { full?: boolean } = {}): Promise<void> {
+    if (!this.pool) return;
+
+    const full = options.full ?? false;
+    const analyzeTables = [
+      "app_state",
+      "users",
+      "auth_sessions",
+      "email_verification_tokens",
+      "password_reset_tokens",
+      "workspace_memberships",
+      "audit_logs"
+    ] as const;
+
+    if (full) {
+      await this.pool.query("VACUUM (FULL, ANALYZE) app_state");
+    }
+
+    for (const table of analyzeTables) {
+      if (full && table === "app_state") continue;
+      await this.pool.query(`VACUUM (ANALYZE) ${table}`);
+    }
   }
 
   getState(): AppState {

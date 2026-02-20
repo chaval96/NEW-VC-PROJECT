@@ -7,7 +7,7 @@ import { URL } from "node:url";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { StateStore } from "./domain/store.js";
-import { buildTemplateProfile } from "./domain/seed.js";
+import { buildTemplateProfile, SEED_FIRM_WEBSITES } from "./domain/seed.js";
 import type { AssessmentResult, CompanyProfile, Firm, PipelineStage, SubmissionStatus, Workspace } from "./domain/types.js";
 import { CampaignOrchestrator } from "./orchestrator/workflow.js";
 import { buildOverview, getCachedOverview } from "./services/analytics.js";
@@ -190,6 +190,71 @@ function normalizeWebsiteInput(value: string): string {
   } catch {
     return withScheme.replace(/\s+/g, "");
   }
+}
+
+function normalizeHost(website: string): string {
+  try {
+    const withScheme = /^https?:\/\//i.test(website) ? website : `https://${website}`;
+    return new URL(withScheme).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return website.trim().toLowerCase().replace(/^https?:\/\//i, "").replace(/^www\./i, "").split("/")[0] ?? "";
+  }
+}
+
+const seedFirmHostSet = new Set(SEED_FIRM_WEBSITES.map((value) => normalizeHost(value)));
+
+function workspaceStateFootprint(workspaceId: string): ReturnType<StateStore["getWorkspaceStateFootprint"]> {
+  return store.getWorkspaceStateFootprint(workspaceId);
+}
+
+function cleanupWorkspaceSeedData(workspaceId: string): {
+  removedSeedFirms: number;
+  removedSeedEvents: number;
+  removedSeedRequests: number;
+  removedSeedTasks: number;
+  removedSeedLogs: number;
+} {
+  const firms = store.listFirms(workspaceId);
+  if (firms.length === 0) {
+    return {
+      removedSeedFirms: 0,
+      removedSeedEvents: 0,
+      removedSeedRequests: 0,
+      removedSeedTasks: 0,
+      removedSeedLogs: 0
+    };
+  }
+
+  const candidates = firms.filter((firm) => {
+    const host = normalizeHost(firm.website);
+    if (!seedFirmHostSet.has(host)) return false;
+    if (firm.importBatchId) return false;
+    if (normalizeListName(firm.sourceListName)) return false;
+
+    const reason = (firm.statusReason ?? "").toLowerCase();
+    const likelySeedReason = reason.includes("pending form workflow") || reason.includes("high thesis fit");
+    const genericNotes = (firm.notes ?? []).length <= 1;
+    return likelySeedReason || genericNotes;
+  });
+
+  if (candidates.length < 5) {
+    return {
+      removedSeedFirms: 0,
+      removedSeedEvents: 0,
+      removedSeedRequests: 0,
+      removedSeedTasks: 0,
+      removedSeedLogs: 0
+    };
+  }
+
+  const removed = store.removeWorkspaceFirms(workspaceId, new Set(candidates.map((firm) => firm.id)));
+  return {
+    removedSeedFirms: removed.removedFirms,
+    removedSeedEvents: removed.removedEvents,
+    removedSeedRequests: removed.removedRequests,
+    removedSeedTasks: removed.removedTasks,
+    removedSeedLogs: removed.removedLogs
+  };
 }
 
 function summarizeLeadLists(
@@ -538,7 +603,27 @@ function normalizeWorkspaceSubmissionEvidence(workspaceId: string): { requests: 
   return { requests, events };
 }
 
-async function runWorkspaceMaintenance(workspaceId: string): Promise<{ removedDuplicates: number; removedEmptyBatches: number }> {
+async function runWorkspaceMaintenance(
+  workspaceId: string,
+  options: {
+    deepCleanup?: boolean;
+  } = {}
+): Promise<{
+  removedDuplicates: number;
+  removedEmptyBatches: number;
+  removedSeedFirms: number;
+  removedSeedEvents: number;
+  removedSeedRequests: number;
+  removedSeedTasks: number;
+  removedSeedLogs: number;
+  removedLogs: number;
+  removedTasks: number;
+  removedRuns: number;
+  removedAssessments: number;
+  removedEvents: number;
+  removedRequests: number;
+  removedImportBatches: number;
+}> {
   normalizeWorkspaceListNames(workspaceId);
   for (const firm of store.listFirms(workspaceId)) {
     const nextStage = normalizePipelineStage(firm.stage);
@@ -553,11 +638,143 @@ async function runWorkspaceMaintenance(workspaceId: string): Promise<{ removedDu
   const dedupe = dedupeWorkspaceFirms(workspaceId);
   const removedEmptyBatches = cleanupWorkspaceImports(workspaceId);
   normalizeWorkspaceSubmissionEvidence(workspaceId);
+
+  const seedCleanup = options.deepCleanup ? cleanupWorkspaceSeedData(workspaceId) : {
+    removedSeedFirms: 0,
+    removedSeedEvents: 0,
+    removedSeedRequests: 0,
+    removedSeedTasks: 0,
+    removedSeedLogs: 0
+  };
+  const historyPrune = options.deepCleanup ? store.pruneWorkspaceHistory(workspaceId) : {
+    removedLogs: 0,
+    removedTasks: 0,
+    removedRuns: 0,
+    removedAssessments: 0,
+    removedEvents: 0,
+    removedRequests: 0,
+    removedImportBatches: 0
+  };
+
   await store.persist();
   return {
     removedDuplicates: dedupe.removed,
-    removedEmptyBatches
+    removedEmptyBatches,
+    ...seedCleanup,
+    ...historyPrune
   };
+}
+
+async function collectStorageReport(): Promise<{
+  generatedAt: string;
+  storage: Awaited<ReturnType<StateStore["getStorageSnapshot"]>>;
+  stateApproxBytes: number;
+  workspaces: Array<{
+    workspaceId: string;
+    name: string;
+    footprint: ReturnType<StateStore["getWorkspaceStateFootprint"]>;
+    totalBytes: number;
+  }>;
+}> {
+  const storage = await store.getStorageSnapshot();
+  const workspaces = store.listWorkspaces().map((workspace) => {
+    const footprint = workspaceStateFootprint(workspace.id);
+    const totalBytes =
+      footprint.firmsBytes +
+      footprint.eventsBytes +
+      footprint.requestsBytes +
+      footprint.tasksBytes +
+      footprint.logsBytes +
+      footprint.runsBytes +
+      footprint.batchesBytes +
+      footprint.assessmentsBytes;
+    return {
+      workspaceId: workspace.id,
+      name: workspace.name,
+      footprint,
+      totalBytes
+    };
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    storage,
+    stateApproxBytes: Buffer.byteLength(JSON.stringify(store.getState()), "utf8"),
+    workspaces
+  };
+}
+
+async function runStorageConsolidation(options: {
+  workspaceIds?: string[];
+  vacuum?: boolean;
+  vacuumFull?: boolean;
+  dryRun?: boolean;
+} = {}): Promise<{
+  before: Awaited<ReturnType<typeof collectStorageReport>>;
+  after: Awaited<ReturnType<typeof collectStorageReport>>;
+  workspaceResults: Array<{
+    workspaceId: string;
+    name: string;
+    maintenance: Awaited<ReturnType<typeof runWorkspaceMaintenance>>;
+    before: ReturnType<StateStore["getWorkspaceStateFootprint"]>;
+    after: ReturnType<StateStore["getWorkspaceStateFootprint"]>;
+  }>;
+  authCleanup: Awaited<ReturnType<AuthService["pruneExpiredArtifacts"]>> | null;
+}> {
+  const before = await collectStorageReport();
+  const targetWorkspaceIds =
+    options.workspaceIds && options.workspaceIds.length > 0
+      ? [...new Set(options.workspaceIds)]
+      : store.listWorkspaces().map((workspace) => workspace.id);
+
+  const workspaceResults: Array<{
+    workspaceId: string;
+    name: string;
+    maintenance: Awaited<ReturnType<typeof runWorkspaceMaintenance>>;
+    before: ReturnType<StateStore["getWorkspaceStateFootprint"]>;
+    after: ReturnType<StateStore["getWorkspaceStateFootprint"]>;
+  }> = [];
+
+  for (const workspaceId of targetWorkspaceIds) {
+    const workspace = store.getWorkspace(workspaceId);
+    if (!workspace) continue;
+    const workspaceBefore = workspaceStateFootprint(workspaceId);
+    const maintenance = options.dryRun
+      ? {
+          removedDuplicates: 0,
+          removedEmptyBatches: 0,
+          removedSeedFirms: 0,
+          removedSeedEvents: 0,
+          removedSeedRequests: 0,
+          removedSeedTasks: 0,
+          removedSeedLogs: 0,
+          removedLogs: 0,
+          removedTasks: 0,
+          removedRuns: 0,
+          removedAssessments: 0,
+          removedEvents: 0,
+          removedRequests: 0,
+          removedImportBatches: 0
+        }
+      : await runWorkspaceMaintenance(workspaceId, { deepCleanup: true });
+    const workspaceAfter = workspaceStateFootprint(workspaceId);
+    workspaceResults.push({
+      workspaceId,
+      name: workspace.name,
+      maintenance,
+      before: workspaceBefore,
+      after: workspaceAfter
+    });
+  }
+
+  const authCleanup = options.dryRun ? null : await authService.pruneExpiredArtifacts();
+
+  if (!options.dryRun && options.vacuum) {
+    await store.compactPostgresStorage({ full: options.vacuumFull });
+  }
+
+  const after = await collectStorageReport();
+  return { before, after, workspaceResults, authCleanup };
 }
 
 const researchBatchSize = Math.max(3, Number(process.env.RESEARCH_BATCH_SIZE ?? 8));
@@ -1188,6 +1405,56 @@ app.post(
       await authService.logout(token);
     }
     res.json({ ok: true });
+  })
+);
+
+app.get(
+  "/api/admin/storage-report",
+  asyncHandler(async (_req, res) => {
+    const report = await collectStorageReport();
+    res.json(report);
+  })
+);
+
+const storageCleanupSchema = z.object({
+  workspaceIds: z.array(z.string().min(1)).optional(),
+  dryRun: z.boolean().optional().default(false),
+  vacuum: z.boolean().optional().default(true),
+  vacuumFull: z.boolean().optional().default(false)
+});
+
+app.post(
+  "/api/admin/storage-cleanup",
+  asyncHandler(async (req, res) => {
+    const parsed = storageCleanupSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.flatten() });
+      return;
+    }
+
+    const user = getAuthUser(res);
+    const requestedWorkspaceIds = parsed.data.workspaceIds;
+    if (requestedWorkspaceIds && requestedWorkspaceIds.length > 0) {
+      const checks = await Promise.all(
+        requestedWorkspaceIds.map((workspaceId) => authService.userHasWorkspaceAccess(user.id, workspaceId))
+      );
+      const forbidden = requestedWorkspaceIds.filter((_id, idx) => !checks[idx]);
+      if (forbidden.length > 0) {
+        res.status(403).json({
+          message: "Forbidden workspace access",
+          forbiddenWorkspaceIds: forbidden
+        });
+        return;
+      }
+    }
+
+    const result = await runStorageConsolidation({
+      workspaceIds: requestedWorkspaceIds,
+      dryRun: parsed.data.dryRun,
+      vacuum: parsed.data.vacuum,
+      vacuumFull: parsed.data.vacuumFull
+    });
+    res.json(result);
   })
 );
 
@@ -2585,6 +2852,24 @@ async function start(): Promise<void> {
   const workspaces = store.listWorkspaces();
   for (const workspace of workspaces) {
     await runWorkspaceMaintenance(workspace.id);
+  }
+
+  if (process.env.RUN_STORAGE_CLEANUP_ON_BOOT === "true") {
+    try {
+      const bootCleanup = await runStorageConsolidation({
+        vacuum: process.env.RUN_STORAGE_CLEANUP_VACUUM !== "false",
+        vacuumFull: process.env.RUN_STORAGE_CLEANUP_FULL === "true",
+        dryRun: false
+      });
+      const before = bootCleanup.before.storage.databaseSizeBytes ?? bootCleanup.before.stateApproxBytes;
+      const after = bootCleanup.after.storage.databaseSizeBytes ?? bootCleanup.after.stateApproxBytes;
+      const reclaimed = Math.max(0, before - after);
+      console.log(
+        `Storage cleanup completed. reclaimed=${reclaimed} bytes, workspaces=${bootCleanup.workspaceResults.length}, authCleanup=${JSON.stringify(bootCleanup.authCleanup)}`
+      );
+    } catch (error) {
+      console.error("Boot storage cleanup failed:", error instanceof Error ? error.message : error);
+    }
   }
 
   setInterval(() => {

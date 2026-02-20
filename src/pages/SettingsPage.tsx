@@ -1,6 +1,15 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { activateWorkspace, changeMyPassword, getProfile, updateMyProfile, updateWorkspaceProfile } from "../api";
+import {
+  activateWorkspace,
+  changeMyPassword,
+  getAdminStorageReport,
+  getProfile,
+  runAdminStorageCleanup,
+  updateMyProfile,
+  updateWorkspaceProfile,
+  type AdminStorageReport
+} from "../api";
 import { Button } from "../components/ui/Button";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Input, Textarea } from "../components/ui/Input";
@@ -14,6 +23,18 @@ interface SettingsPageProps {
 
 const strictEmailPattern = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
 const urlPattern = /^https?:\/\/.+/i;
+
+function formatBytes(value?: number): string {
+  if (!Number.isFinite(value ?? NaN) || !value || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let next = value;
+  let index = 0;
+  while (next >= 1024 && index < units.length - 1) {
+    next /= 1024;
+    index += 1;
+  }
+  return `${next.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
 
 export function SettingsPage({ user, onAuthUserUpdated }: SettingsPageProps): JSX.Element {
   const { workspaceId } = useParams<{ workspaceId: string }>();
@@ -29,6 +50,11 @@ export function SettingsPage({ user, onAuthUserUpdated }: SettingsPageProps): JS
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const [storageReport, setStorageReport] = useState<AdminStorageReport | null>(null);
+  const [loadingStorage, setLoadingStorage] = useState(false);
+  const [runningCleanup, setRunningCleanup] = useState(false);
+  const [storageNotice, setStorageNotice] = useState<string>();
+  const [storageError, setStorageError] = useState<string>();
 
   useEffect(() => {
     if (!workspaceId) {
@@ -48,6 +74,24 @@ export function SettingsPage({ user, onAuthUserUpdated }: SettingsPageProps): JS
 
     void load();
   }, [workspaceId, navigate]);
+
+  const refreshStorageReport = async (): Promise<void> => {
+    setLoadingStorage(true);
+    setStorageError(undefined);
+    try {
+      const report = await getAdminStorageReport();
+      setStorageReport(report);
+    } catch (err) {
+      setStorageError(err instanceof Error ? err.message : "Could not load storage report.");
+    } finally {
+      setLoadingStorage(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshStorageReport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const saveAccount = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -135,6 +179,28 @@ export function SettingsPage({ user, onAuthUserUpdated }: SettingsPageProps): JS
       setError(err instanceof Error ? err.message : "Could not update password.");
     } finally {
       setChangingPassword(false);
+    }
+  };
+
+  const runStorageCleanup = async (vacuumFull: boolean): Promise<void> => {
+    setStorageError(undefined);
+    setStorageNotice(undefined);
+    setRunningCleanup(true);
+    try {
+      const result = await runAdminStorageCleanup({ vacuum: true, vacuumFull });
+      setStorageReport(result.after);
+      const before =
+        result.before.storage.databaseSizeBytes ?? result.before.stateApproxBytes;
+      const after =
+        result.after.storage.databaseSizeBytes ?? result.after.stateApproxBytes;
+      const reclaimed = Math.max(0, before - after);
+      setStorageNotice(
+        `Cleanup completed. Reclaimed ${formatBytes(reclaimed)} (${formatBytes(before)} → ${formatBytes(after)}).`
+      );
+    } catch (err) {
+      setStorageError(err instanceof Error ? err.message : "Cleanup failed.");
+    } finally {
+      setRunningCleanup(false);
     }
   };
 
@@ -261,6 +327,111 @@ export function SettingsPage({ user, onAuthUserUpdated }: SettingsPageProps): JS
                 {savingCompany ? "Saving..." : "Save project defaults"}
               </Button>
             </form>
+          )}
+        </CardBody>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <h2 className="text-sm font-semibold">Database Maintenance</h2>
+        </CardHeader>
+        <CardBody>
+          {storageError ? (
+            <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{storageError}</div>
+          ) : null}
+          {storageNotice ? (
+            <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{storageNotice}</div>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => void refreshStorageReport()} disabled={loadingStorage || runningCleanup}>
+              {loadingStorage ? "Refreshing..." : "Refresh report"}
+            </Button>
+            <Button variant="secondary" onClick={() => void runStorageCleanup(false)} disabled={runningCleanup || loadingStorage}>
+              {runningCleanup ? "Running..." : "Run cleanup"}
+            </Button>
+            <Button onClick={() => void runStorageCleanup(true)} disabled={runningCleanup || loadingStorage}>
+              {runningCleanup ? "Running..." : "Run deep compact"}
+            </Button>
+          </div>
+
+          {storageReport ? (
+            <div className="mt-4 space-y-4 text-sm text-slate-600 dark:text-slate-300">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                  <div className="text-xs text-slate-500 dark:text-slate-400">Database Size</div>
+                  <div className="mt-1 text-base font-semibold">{formatBytes(storageReport.storage.databaseSizeBytes ?? storageReport.storage.localStateFileBytes)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                  <div className="text-xs text-slate-500 dark:text-slate-400">app_state Table</div>
+                  <div className="mt-1 text-base font-semibold">{formatBytes(storageReport.storage.appStateTableTotalBytes)}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                  <div className="text-xs text-slate-500 dark:text-slate-400">app_state Payload</div>
+                  <div className="mt-1 text-base font-semibold">{formatBytes(storageReport.storage.appStatePayloadBytes)}</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Top Tables by Size</div>
+                <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+                  <table className="min-w-full text-left text-xs">
+                    <thead className="bg-slate-50 dark:bg-slate-800">
+                      <tr>
+                        <th className="px-3 py-2">Table</th>
+                        <th className="px-3 py-2">Total</th>
+                        <th className="px-3 py-2">Heap</th>
+                        <th className="px-3 py-2">Index</th>
+                        <th className="px-3 py-2">Dead Rows</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {storageReport.storage.tableStats.slice(0, 10).map((row) => (
+                        <tr key={row.tableName} className="border-t border-slate-100 dark:border-slate-700">
+                          <td className="px-3 py-2 font-medium">{row.tableName}</td>
+                          <td className="px-3 py-2">{formatBytes(row.totalBytes)}</td>
+                          <td className="px-3 py-2">{formatBytes(row.tableBytes)}</td>
+                          <td className="px-3 py-2">{formatBytes(row.indexBytes)}</td>
+                          <td className="px-3 py-2">{row.deadTuples}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Workspace Footprint</div>
+                <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+                  <table className="min-w-full text-left text-xs">
+                    <thead className="bg-slate-50 dark:bg-slate-800">
+                      <tr>
+                        <th className="px-3 py-2">Workspace</th>
+                        <th className="px-3 py-2">Approx Size</th>
+                        <th className="px-3 py-2">Leads</th>
+                        <th className="px-3 py-2">Events</th>
+                        <th className="px-3 py-2">Requests</th>
+                        <th className="px-3 py-2">Logs</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {storageReport.workspaces.map((workspace) => (
+                        <tr key={workspace.workspaceId} className="border-t border-slate-100 dark:border-slate-700">
+                          <td className="px-3 py-2 font-medium">{workspace.name}</td>
+                          <td className="px-3 py-2">{formatBytes(workspace.totalBytes)}</td>
+                          <td className="px-3 py-2">{workspace.footprint.firmsCount}</td>
+                          <td className="px-3 py-2">{workspace.footprint.eventsCount}</td>
+                          <td className="px-3 py-2">{workspace.footprint.requestsCount}</td>
+                          <td className="px-3 py-2">{workspace.footprint.logsCount}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">No storage report yet.</p>
           )}
         </CardBody>
       </Card>

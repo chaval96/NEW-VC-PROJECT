@@ -40,6 +40,13 @@ interface PasswordResetRequestResult {
   resetUrl?: string;
 }
 
+export interface AuthPruneResult {
+  removedSessions: number;
+  removedVerificationTokens: number;
+  removedPasswordResetTokens: number;
+  removedAuditLogs: number;
+}
+
 class AuthError extends Error {
   status: number;
 
@@ -125,6 +132,70 @@ export class AuthService {
       email_verified_at: new Date().toISOString()
     };
     this.memoryUsers.set(user.email, user);
+  }
+
+  async pruneExpiredArtifacts(options: { auditRetentionDays?: number } = {}): Promise<AuthPruneResult> {
+    const auditRetentionDays = Math.max(7, options.auditRetentionDays ?? 180);
+
+    if (this.pool) {
+      const sessions = await this.pool.query(
+        `DELETE FROM auth_sessions
+         WHERE revoked_at IS NOT NULL OR expires_at < NOW()`
+      );
+
+      const verificationTokens = await this.pool.query(
+        `DELETE FROM email_verification_tokens
+         WHERE used_at IS NOT NULL OR expires_at < NOW()`
+      );
+
+      const passwordResetTokens = await this.pool.query(
+        `DELETE FROM password_reset_tokens
+         WHERE used_at IS NOT NULL OR expires_at < NOW()`
+      );
+
+      const auditLogs = await this.pool.query(
+        `DELETE FROM audit_logs
+         WHERE created_at < NOW() - make_interval(days => $1::int)`,
+        [auditRetentionDays]
+      );
+
+      return {
+        removedSessions: sessions.rowCount ?? 0,
+        removedVerificationTokens: verificationTokens.rowCount ?? 0,
+        removedPasswordResetTokens: passwordResetTokens.rowCount ?? 0,
+        removedAuditLogs: auditLogs.rowCount ?? 0
+      };
+    }
+
+    const now = Date.now();
+    const beforeSessionCount = this.memorySessions.size;
+    const beforeVerificationCount = this.memoryVerificationTokens.size;
+    const beforeResetCount = this.memoryPasswordResetTokens.size;
+
+    for (const [token, sessionUser] of this.memorySessions.entries()) {
+      if (!sessionUser) {
+        this.memorySessions.delete(token);
+      }
+    }
+
+    for (const [hash, token] of this.memoryVerificationTokens.entries()) {
+      if (token.used || token.expiresAt <= now) {
+        this.memoryVerificationTokens.delete(hash);
+      }
+    }
+
+    for (const [hash, token] of this.memoryPasswordResetTokens.entries()) {
+      if (token.used || token.expiresAt <= now) {
+        this.memoryPasswordResetTokens.delete(hash);
+      }
+    }
+
+    return {
+      removedSessions: beforeSessionCount - this.memorySessions.size,
+      removedVerificationTokens: beforeVerificationCount - this.memoryVerificationTokens.size,
+      removedPasswordResetTokens: beforeResetCount - this.memoryPasswordResetTokens.size,
+      removedAuditLogs: 0
+    };
   }
 
   private cleanEnv(value?: string): string {
