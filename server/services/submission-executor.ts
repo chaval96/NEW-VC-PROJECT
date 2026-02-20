@@ -43,12 +43,25 @@ interface ExecutionOptions {
   attempt: number;
 }
 
+function envFlag(name: string): boolean {
+  const raw = process.env[name];
+  if (!raw) return false;
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  const unquoted =
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+      ? trimmed.slice(1, -1).trim()
+      : trimmed;
+  const normalized = unquoted.toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on";
+}
+
 export async function executeSubmissionRequest(
   request: SubmissionRequest,
   options: ExecutionOptions
 ): Promise<SubmissionExecutionResult> {
-  const enablePlaywright = process.env.PLAYWRIGHT_ENABLED === "true";
-  const enableSubmit = process.env.PLAYWRIGHT_SUBMIT_ENABLED === "true";
+  const enablePlaywright = envFlag("PLAYWRIGHT_ENABLED");
+  const enableSubmit = envFlag("PLAYWRIGHT_SUBMIT_ENABLED");
 
   if (!enablePlaywright) {
     return {

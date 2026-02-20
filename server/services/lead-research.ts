@@ -47,11 +47,11 @@ const MAX_HTML_CHARS = Math.max(40_000, Number(process.env.RESEARCH_MAX_HTML_CHA
 const MAX_TEXT_CHARS = 60_000;
 const EXTERNAL_TIMEOUT_MS = Math.max(1500, Number(process.env.RESEARCH_EXTERNAL_TIMEOUT_MS ?? 4500));
 
-const openVcEnabled = process.env.OPENVC_ENRICH_ENABLED !== "false";
-const wikidataEnabled = process.env.WIKIDATA_ENRICH_ENABLED !== "false";
-const opencorporatesEnabled = process.env.OPENCORPORATES_ENRICH_ENABLED === "true";
-const wikipediaEnabled = process.env.WIKIPEDIA_ENRICH_ENABLED !== "false";
-const openAiResearchEnabled = process.env.OPENAI_RESEARCH_ENABLED === "true";
+const openVcEnabled = process.env.OPENVC_ENRICH_ENABLED?.trim().toLowerCase() !== "false";
+const wikidataEnabled = process.env.WIKIDATA_ENRICH_ENABLED?.trim().toLowerCase() !== "false";
+const opencorporatesEnabled = envFlag("OPENCORPORATES_ENRICH_ENABLED");
+const wikipediaEnabled = process.env.WIKIPEDIA_ENRICH_ENABLED?.trim().toLowerCase() !== "false";
+const openAiResearchEnabled = envFlag("OPENAI_RESEARCH_ENABLED");
 const openAiResearchModel = process.env.OPENAI_RESEARCH_MODEL?.trim() || "gpt-4.1-mini";
 const openAiResearchMaxTokens = Math.max(300, Number(process.env.OPENAI_RESEARCH_MAX_OUTPUT_TOKENS ?? 700));
 const openAiWorkflowId = process.env.OPENAI_WORKFLOW_ID?.trim() ?? "";
@@ -127,6 +127,19 @@ const stagePatterns: Array<{ stage: string; regexes: RegExp[] }> = [
 
 function bounded(value: number, min = 0, max = 1): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function envFlag(name: string): boolean {
+  const raw = process.env[name];
+  if (!raw) return false;
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  const unquoted =
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+      ? trimmed.slice(1, -1).trim()
+      : trimmed;
+  const normalized = unquoted.toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on";
 }
 
 function uniqueTop(values: string[], limit = 3): string[] {
