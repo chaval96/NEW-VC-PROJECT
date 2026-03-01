@@ -7,3 +7,10 @@ server/data/state.json
 tmp/
 VC-Outreach-System/
 VC-System-App/
+
+# Dev Factory
+logs/
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v3/
+.aider.tags.cache.v4/

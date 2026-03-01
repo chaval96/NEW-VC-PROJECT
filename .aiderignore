@@ -1,0 +1,8 @@
+# Agent cannot edit these
+tests/acceptance/
+node_modules/
+logs/
+.env*
+*.log
+package-lock.json
+public/branding/
