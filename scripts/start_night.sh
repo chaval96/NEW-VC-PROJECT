@@ -82,10 +82,14 @@ echo ""
 echo "Starting in 3 seconds... (Ctrl+C to cancel)"
 sleep 3
 
+RUN_LOG="$DIR/logs/night_$(date +%Y%m%d_%H%M).log"
+
 tmux new-session -d -s "$SESSION" -c "$DIR" \
-  "bash $DIR/scripts/run_night.sh $DIR/tasks.md 2>&1 | tee -a $DIR/logs/night_$(date +%Y%m%d_%H%M).log; echo ''; echo 'Done. Press Enter.'; read"
+  "DEV_FACTORY_LOG_FILE=$RUN_LOG bash $DIR/scripts/run_night.sh $DIR/tasks.md"
 
 echo "Night run started."
 echo "Branch: $(git branch --show-current)"
+echo "Log:    $RUN_LOG"
 echo "Watch:  tmux attach -t $SESSION"
 echo "Stop:   tmux kill-session -t $SESSION"
+echo "Report: logs/reports/night-shift-report.md"

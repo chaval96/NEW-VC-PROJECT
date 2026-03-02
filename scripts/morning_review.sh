@@ -18,6 +18,14 @@ echo "MORNING REVIEW"
 echo "$(date '+%A, %B %d %Y at %H:%M')"
 echo ""
 
+REPORT="logs/reports/night-shift-report.md"
+if [ -f "$REPORT" ]; then
+  echo "-- NIGHT-SHIFT-REPORT --"
+  echo "$REPORT"
+  sed -n '1,180p' "$REPORT"
+  echo ""
+fi
+
 LOG=$(ls -t logs/night_*.log 2>/dev/null | head -1 || true)
 if [ -z "$LOG" ]; then
   echo "No logs found."

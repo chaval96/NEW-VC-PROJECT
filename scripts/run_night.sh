@@ -553,12 +553,26 @@ EORETRY
   log ""
 }
 
+emit_night_shift_report() {
+  local report_path
+  if [ ! -x "$PROJECT_DIR/scripts/night_shift_report.sh" ]; then
+    log "Night shift report skipped: script missing"
+    return
+  fi
+
+  if report_path="$(bash "$PROJECT_DIR/scripts/night_shift_report.sh" "$LOG_FILE" 2>>"$LOG_FILE")"; then
+    log "night-shift-report generated: $report_path"
+  else
+    log "Night shift report generation failed"
+  fi
+}
+
 log_backlog_progress() {
   if [ -f "$BACKLOG_FILE" ]; then
     local open_count
     local done_count
-    open_count="$(grep -E '^- \[ \] P[0-3] \|' "$BACKLOG_FILE" | wc -l | xargs)"
-    done_count="$(grep -E '^- \[x\] P[0-3] \|' "$BACKLOG_FILE" | wc -l | xargs)"
+    open_count="$(grep -Ec '^- \[ \] P[0-3] \|' "$BACKLOG_FILE" || true)"
+    done_count="$(grep -Ec '^- \[x\] P[0-3] \|' "$BACKLOG_FILE" || true)"
     log "Backlog progress: open=$open_count done=$done_count"
   fi
 }
@@ -572,6 +586,7 @@ main() {
     log "Completed: 0"
     log "Failed: 0"
     log "Skipped: 0"
+    emit_night_shift_report
     return
   fi
 
@@ -647,6 +662,7 @@ main() {
   log_backlog_progress
   log "Recent commits:"
   git log --oneline -10 >> "$LOG_FILE" 2>/dev/null || true
+  emit_night_shift_report
 }
 
 main
