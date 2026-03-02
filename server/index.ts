@@ -28,8 +28,10 @@ const port = Number(process.env.PORT ?? 8787);
 const authRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes 
   max: 100, // Limit each IP to 100 requests per windowMs
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: true, // Enable the `X-RateLimit-*` headers for compatibility
+  standardHeaders: true, // Return rate limit info in the standardized `RateLimit-*` headers
+  legacyHeaders: true, // Enable the deprecated `X-RateLimit-*` headers for compatibility
+  message: "Too many requests, please try again later.",
+  headers: true, // Explicitly enable headers
 });
 
 const store = new StateStore();
