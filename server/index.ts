@@ -24,6 +24,14 @@ import { executeSubmissionRequest, type SubmissionExecutionResult } from "./serv
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
 
+// Configure rate limiting
+const authRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+});
+
 const store = new StateStore();
 const orchestrator = new CampaignOrchestrator(store);
 const creditService = new CreditService(store);
@@ -1203,8 +1211,8 @@ const signupSchema = z.object({
 
 app.post(
   "/api/auth/signup",
-  authRateLimit,
   [
+    authRateLimit,
     body('email').isEmail().withMessage('Please enter a valid email address'),
     body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters long'),
     body('name').notEmpty().withMessage('Name is required')
