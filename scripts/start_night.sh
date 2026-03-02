@@ -13,6 +13,10 @@ fi
 
 SESSION="devfactory"
 DIR="${DEV_FACTORY_DIR:-$HOME/project}"
+SYNC_TASKS="${DEV_FACTORY_SYNC_TASKS:-true}"
+USE_NIGHT_BRANCH="${DEV_FACTORY_USE_NIGHT_BRANCH:-true}"
+BASE_BRANCH="${DEV_FACTORY_BASE_BRANCH:-main}"
+BRANCH_PREFIX="${DEV_FACTORY_BRANCH_PREFIX:-nightly}"
 
 if [ ! -d "$DIR" ]; then
   echo "ERROR: Project directory not found: $DIR"
@@ -22,6 +26,11 @@ fi
 cd "$DIR"
 
 echo "Dev Factory V2 - Starting Night Session"
+
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "ERROR: $DIR is not a git repository"
+  exit 1
+fi
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "Already running. Attach: tmux attach -t $SESSION"
@@ -33,9 +42,25 @@ if [ ! -f "$DIR/tasks.md" ]; then
   bash "$DIR/scripts/sync_tasks_from_backlog.sh"
 fi
 
-if [ "${DEV_FACTORY_SYNC_TASKS:-false}" = "true" ]; then
+if [ "$SYNC_TASKS" = "true" ]; then
   echo "DEV_FACTORY_SYNC_TASKS=true -> regenerating tasks.md from backlog"
   bash "$DIR/scripts/sync_tasks_from_backlog.sh"
+fi
+
+if [ "$USE_NIGHT_BRANCH" = "true" ]; then
+  current_branch="$(git branch --show-current)"
+  if [ "$current_branch" = "$BASE_BRANCH" ]; then
+    branch_name="$BRANCH_PREFIX/$(date +%Y%m%d_%H%M%S)"
+    if ! git checkout -b "$branch_name" >/dev/null 2>&1; then
+      branch_name="${branch_name}_$RANDOM"
+      git checkout -b "$branch_name" >/dev/null 2>&1
+    fi
+    echo "Working branch: $branch_name"
+  else
+    echo "Current branch: $current_branch (keeping current branch for night run)"
+  fi
+else
+  echo "Night branch mode disabled (DEV_FACTORY_USE_NIGHT_BRANCH=false)"
 fi
 
 TASK_COUNT=$(grep -c '^## Task' "$DIR/tasks.md" 2>/dev/null || echo 0)
@@ -61,5 +86,6 @@ tmux new-session -d -s "$SESSION" -c "$DIR" \
   "bash $DIR/scripts/run_night.sh $DIR/tasks.md 2>&1 | tee -a $DIR/logs/night_$(date +%Y%m%d_%H%M).log; echo ''; echo 'Done. Press Enter.'; read"
 
 echo "Night run started."
+echo "Branch: $(git branch --show-current)"
 echo "Watch:  tmux attach -t $SESSION"
 echo "Stop:   tmux kill-session -t $SESSION"

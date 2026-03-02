@@ -17,6 +17,10 @@ MAX_RETRIES="${MAX_RETRIES_PER_TASK:-8}"
 MAX_CONSEC_FAILS="${MAX_CONSECUTIVE_FAILURES:-3}"
 TEST_CMD="${DEV_FACTORY_TEST_CMD:-npx vitest run}"
 LINT_CMD="${DEV_FACTORY_LINT_CMD:-npx tsc --noEmit}"
+PLANNING_ENABLED="${DEV_FACTORY_ENABLE_PLANNING:-false}"
+PLANNING_TIMEOUT_SECONDS="${DEV_FACTORY_PLANNING_TIMEOUT_SECONDS:-120}"
+AIDER_TASK_TIMEOUT_SECONDS="${DEV_FACTORY_AIDER_TASK_TIMEOUT_SECONDS:-600}"
+BACKLOG_FILE="${DEV_FACTORY_BACKLOG_FILE:-$PROJECT_DIR/docs/REVISION_BACKLOG.md}"
 TEST_OUTPUT="$(mktemp /tmp/dev_factory_test_output.XXXXXX)"
 
 COMPLETED=0
@@ -139,13 +143,48 @@ run_tests() {
   fi
 
   log "Tests failed"
+  log "Failure category: test_failure"
   tail -20 "$TEST_OUTPUT" | tee -a "$LOG_FILE" >/dev/null
   return 1
+}
+
+generate_local_plan() {
+  local global_rules="$1"
+  {
+    echo "# plan.md"
+    echo
+    echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "Source: $TASKS_FILE"
+    echo
+    echo "## Global Rules"
+    echo "$global_rules"
+    echo
+    echo "## Task Breakdown"
+
+    local idx=1
+    while IFS= read -r task_name; do
+      [ -n "$task_name" ] || continue
+      echo "### ${idx}. $task_name"
+      extract_task_body "$task_name" | sed 's/^/- /'
+      echo
+      idx=$((idx + 1))
+    done < <(extract_task_names)
+  } > "$PROJECT_DIR/plan.md"
+
+  log "Lightweight local plan generated: plan.md"
 }
 
 planning_phase() {
   local global_rules="$1"
   local planning_prompt
+
+  if [ "$PLANNING_ENABLED" != "true" ]; then
+    log "Planning phase skipped (DEV_FACTORY_ENABLE_PLANNING=false)"
+    generate_local_plan "$global_rules"
+    log ""
+    return
+  fi
+
   planning_prompt=$(cat << EOPLAN
 Read tasks.md and create plan.md with:
 1. task execution order,
@@ -160,18 +199,68 @@ EOPLAN
 )
 
   log "Planning phase (Sonnet)"
-  timeout 300 aider "${AIDER_ARGS[@]}" \
+  if timeout "$PLANNING_TIMEOUT_SECONDS" aider "${AIDER_ARGS[@]}" \
     --model "openrouter/anthropic/claude-sonnet-4" \
     --message "$planning_prompt" \
-    --file "$TASKS_FILE" >> "$LOG_FILE" 2>&1 || log "Planning phase returned non-zero exit code"
-
-  if [ -f "$PROJECT_DIR/plan.md" ]; then
-    log "Plan created: plan.md"
+    --file "$TASKS_FILE" >> "$LOG_FILE" 2>&1; then
+    if [ -f "$PROJECT_DIR/plan.md" ]; then
+      log "Plan created: plan.md"
+    else
+      log "Planner exited successfully but plan.md missing; generating local fallback"
+      generate_local_plan "$global_rules"
+    fi
   else
-    log "Plan not created; continuing"
+    log "Planning phase returned non-zero exit code"
+    log "Generating local fallback plan"
+    generate_local_plan "$global_rules"
   fi
 
   log ""
+}
+
+mark_backlog_task_done() {
+  local task_name="$1"
+  local title
+  local ts
+  local marker_file
+
+  [ -f "$BACKLOG_FILE" ] || return 0
+
+  title="$(printf '%s' "$task_name" | sed -E 's/^Task[[:space:]]+[0-9]+:[[:space:]]*//')"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  marker_file="/tmp/dev_factory_backlog_marked.$$"
+
+  awk -v title="$title" -v ts="$ts" -v marker="$marker_file" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    BEGIN { marked = 0 }
+    {
+      if (!marked && $0 ~ /^- \[ \] P[0-3] \|/) {
+        n = split($0, parts, "|")
+        if (n >= 4) {
+          current = trim(parts[2])
+          if (current == title) {
+            sub(/^- \[ \]/, "- [x]")
+            $0 = $0 " | Completed: " ts
+            marked = 1
+          }
+        }
+      }
+      print
+    }
+    END {
+      if (marked == 1) {
+        print "1" > marker
+      }
+    }
+  ' "$BACKLOG_FILE" > "$BACKLOG_FILE.tmp"
+  mv "$BACKLOG_FILE.tmp" "$BACKLOG_FILE"
+
+  if [ -f "$marker_file" ]; then
+    rm -f "$marker_file"
+    log "Backlog updated: '$title' marked done"
+  else
+    log "Backlog note: no matching open item for '$title'"
+  fi
 }
 
 run_task() {
@@ -181,7 +270,11 @@ run_task() {
   local attempt=0
   local task_ok=false
   local safe_task_name
+  local task_start_ts
+  local task_end_ts
+  local elapsed
 
+  task_start_ts="$(date +%s)"
   safe_task_name="$(printf '%s' "$task_name" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
 
   log "Task: $safe_task_name"
@@ -205,7 +298,7 @@ EOTASK
     attempt=$((attempt + 1))
     log "Attempt $attempt/$MAX_RETRIES"
 
-    timeout 600 aider "${AIDER_ARGS[@]}" --message "$prompt" >> "$LOG_FILE" 2>&1 || true
+    timeout "$AIDER_TASK_TIMEOUT_SECONDS" aider "${AIDER_ARGS[@]}" --message "$prompt" >> "$LOG_FILE" 2>&1 || true
     run_lint
 
     if run_tests; then
@@ -234,14 +327,20 @@ EORETRY
     fi
   done
 
+  task_end_ts="$(date +%s)"
+  elapsed=$((task_end_ts - task_start_ts))
+
   if [ "$task_ok" = true ]; then
     log "Completed: $safe_task_name"
+    log "Task duration (seconds): $elapsed"
     COMPLETED=$((COMPLETED + 1))
     CONSECUTIVE_FAILS=0
+    mark_backlog_task_done "$safe_task_name"
     git add -A
     git commit -m "feat: $safe_task_name [dev-factory]" --allow-empty >/dev/null 2>&1 || true
   else
     log "Failed: $safe_task_name"
+    log "Task duration (seconds): $elapsed"
     FAILED=$((FAILED + 1))
     CONSECUTIVE_FAILS=$((CONSECUTIVE_FAILS + 1))
 
@@ -252,6 +351,16 @@ EORETRY
   fi
 
   log ""
+}
+
+log_backlog_progress() {
+  if [ -f "$BACKLOG_FILE" ]; then
+    local open_count
+    local done_count
+    open_count="$(grep -E '^- \[ \] P[0-3] \|' "$BACKLOG_FILE" | wc -l | xargs)"
+    done_count="$(grep -E '^- \[x\] P[0-3] \|' "$BACKLOG_FILE" | wc -l | xargs)"
+    log "Backlog progress: open=$open_count done=$done_count"
+  fi
 }
 
 main() {
@@ -303,6 +412,7 @@ main() {
   log "Completed: $COMPLETED"
   log "Failed: $FAILED"
   log "Skipped: $SKIPPED"
+  log_backlog_progress
   log "Recent commits:"
   git log --oneline -10 >> "$LOG_FILE" 2>/dev/null || true
 }
