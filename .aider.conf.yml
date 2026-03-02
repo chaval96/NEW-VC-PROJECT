@@ -8,8 +8,8 @@ map-tokens: 1024
 map-multiplier-no-files: 2
 
 # Auto-validation
-auto-commits: true
-auto-test: true
+auto-commits: false
+auto-test: false
 test-cmd: "npx vitest run 2>&1 | head -50"
 lint-cmd: "npx tsc --noEmit 2>&1 | head -30"
 
