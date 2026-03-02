@@ -2,6 +2,7 @@ import cors from "cors";
 import dayjs from "dayjs";
 import express from "express";
 import rateLimit from "express-rate-limit";
+import rateLimit from "express-rate-limit";
 import { body, validationResult } from "express-validator";
 import { access } from "node:fs/promises";
 import path from "node:path";
@@ -1210,7 +1211,25 @@ app.use(
     origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",").map((value) => value.trim()) : true
   })
 );
+// Rate limiting middleware
+const globalRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 requests per window per IP
+  message: { error: "Too many requests" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 requests per window per IP
+  message: { error: "Too many requests" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.use(express.json({ limit: "5mb" }));
+app.use(globalRateLimit);
 app.use(globalRateLimit);
 
 app.get("/api/health", (_req, res) => {
@@ -1225,6 +1244,7 @@ const signupSchema = z.object({
 
 app.post(
   "/api/auth/signup",
+  authRateLimit,
   authRateLimit,
   [
     body('email').isEmail().withMessage('Please enter a valid email address'),
@@ -1252,6 +1272,7 @@ const verifySchema = z.object({ token: z.string().min(12) });
 app.post(
   "/api/auth/verify-email",
   authRateLimit,
+  authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = verifySchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -1267,6 +1288,7 @@ app.post(
 const resendVerificationSchema = z.object({ email: authEmailSchema });
 app.post(
   "/api/auth/resend-verification",
+  authRateLimit,
   authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = resendVerificationSchema.safeParse(req.body ?? {});
@@ -1294,6 +1316,7 @@ app.post(
 const forgotPasswordSchema = z.object({ email: authEmailSchema });
 app.post(
   "/api/auth/forgot-password",
+  authRateLimit,
   authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = forgotPasswordSchema.safeParse(req.body ?? {});
@@ -1324,6 +1347,7 @@ const resetPasswordSchema = z.object({
 app.post(
   "/api/auth/reset-password",
   authRateLimit,
+  authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = resetPasswordSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -1343,6 +1367,7 @@ const loginSchema = z.object({
 
 app.post(
   "/api/auth/login",
+  authRateLimit,
   authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = loginSchema.safeParse(req.body ?? {});
