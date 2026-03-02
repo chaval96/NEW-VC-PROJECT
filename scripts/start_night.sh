@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
-source ~/.bashrc
+
+if [ -f /root/.dev_factory_exports ]; then
+  # shellcheck disable=SC1091
+  source /root/.dev_factory_exports
+else
+  set +u
+  # shellcheck disable=SC1091
+  source ~/.bashrc 2>/dev/null || true
+  set -u
+fi
 
 SESSION="devfactory"
 DIR="${DEV_FACTORY_DIR:-$HOME/project}"
@@ -12,7 +21,7 @@ fi
 
 cd "$DIR"
 
-echo "Dev Factory V2 — Starting Night Session"
+echo "Dev Factory V2 - Starting Night Session"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "Already running. Attach: tmux attach -t $SESSION"
@@ -26,12 +35,12 @@ fi
 
 TASK_COUNT=$(grep -c '^## Task' "$DIR/tasks.md" 2>/dev/null || echo 0)
 if [ "$TASK_COUNT" -eq 0 ]; then
-  echo "No tasks in tasks.md — write tasks first"
+  echo "No tasks in tasks.md - write tasks first"
   exit 1
 fi
 
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-  echo "OPENROUTER_API_KEY missing. Run: source ~/.bashrc"
+  echo "OPENROUTER_API_KEY missing. Run: source /root/.dev_factory_exports"
   exit 1
 fi
 

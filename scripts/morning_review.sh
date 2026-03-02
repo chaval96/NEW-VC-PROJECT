@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
-source ~/.bashrc
+
+if [ -f /root/.dev_factory_exports ]; then
+  # shellcheck disable=SC1091
+  source /root/.dev_factory_exports
+else
+  set +u
+  # shellcheck disable=SC1091
+  source ~/.bashrc 2>/dev/null || true
+  set -u
+fi
 
 DIR="${DEV_FACTORY_DIR:-$HOME/project}"
 cd "$DIR"
