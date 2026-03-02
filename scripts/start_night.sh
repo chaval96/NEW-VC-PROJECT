@@ -29,8 +29,13 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
 fi
 
 if [ ! -f "$DIR/tasks.md" ]; then
-  echo "No tasks.md found in $DIR"
-  exit 1
+  echo "No tasks.md found in $DIR. Generating from backlog..."
+  bash "$DIR/scripts/sync_tasks_from_backlog.sh"
+fi
+
+if [ "${DEV_FACTORY_SYNC_TASKS:-false}" = "true" ]; then
+  echo "DEV_FACTORY_SYNC_TASKS=true -> regenerating tasks.md from backlog"
+  bash "$DIR/scripts/sync_tasks_from_backlog.sh"
 fi
 
 TASK_COUNT=$(grep -c '^## Task' "$DIR/tasks.md" 2>/dev/null || echo 0)

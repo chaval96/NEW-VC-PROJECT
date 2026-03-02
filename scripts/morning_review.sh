@@ -43,3 +43,15 @@ echo "-- NEXT --"
 echo "1) Review diffs: git diff HEAD~5..HEAD"
 echo "2) If good: push/merge"
 echo "3) If not: update tasks.md and rerun"
+
+echo ""
+echo "-- BACKLOG PROGRESS --"
+if [ -f docs/REVISION_BACKLOG.md ]; then
+  open_count=$(grep -E "^- \[ \] P[0-3] \|" docs/REVISION_BACKLOG.md | wc -l | xargs)
+  done_count=$(grep -E "^- \[x\] P[0-3] \|" docs/REVISION_BACKLOG.md | wc -l | xargs)
+  echo "Open: $open_count | Done: $done_count"
+  echo "Next 3 open items:"
+  grep -E "^- \[ \] P[0-3] \|" docs/REVISION_BACKLOG.md | head -3 | sed "s/^- \[ \] /  - /"
+else
+  echo "docs/REVISION_BACKLOG.md not found"
+fi
