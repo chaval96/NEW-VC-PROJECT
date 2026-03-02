@@ -14,3 +14,5 @@ logs/
 .aider.input.history
 .aider.tags.cache.v3/
 .aider.tags.cache.v4/
+.aider*
+night.log
