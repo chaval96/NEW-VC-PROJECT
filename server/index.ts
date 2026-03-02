@@ -41,6 +41,16 @@ const authRateLimit = rateLimit({
   legacyHeaders: true,
 });
 
+function handleValidationErrors(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    res.status(400).json({ errors: errors.array() });
+    return;
+  }
+  next();
+}
+
+
 const store = new StateStore();
 const orchestrator = new CampaignOrchestrator(store);
 const creditService = new CreditService(store);
@@ -55,14 +65,6 @@ function asyncHandler(fn: AsyncHandler): express.RequestHandler {
   };
 }
 
-const handleValidationErrors: express.RequestHandler = (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    res.status(400).json({ errors: errors.array() });
-    return;
-  }
-  next();
-};
 
 function statusToStage(status: SubmissionStatus): PipelineStage {
   switch (status) {
