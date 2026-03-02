@@ -7,17 +7,17 @@
 - Use behavioral assertions (avoid brittle exact timestamps/UUIDs).
 - Keep functions focused and changes minimal.
 
-## Task 1: Restore clean API middleware wiring
+## Task 1: Enforce submission state-machine transitions
 Priority: P0
-- Remove duplicated imports/declarations in `server/index.ts`, keep single global+auth rate limit setup and single validation middleware chain
-- Acceptance: `npm run typecheck` passes without `server/index.ts` duplicate errors
+- In `server/index.ts`, centralize and enforce valid transition guards for approve/reject/bulk-approve/watchdog paths so invalid status jumps return deterministic `409` responses and do not mutate state
+- Acceptance: Approve/reject endpoints reject invalid transitions consistently and `npm test` stays green
 
-## Task 2: Add API route integration tests
+## Task 2: Make submission execution idempotent under concurrent actions
 Priority: P0
-- Add `tests/acceptance/auth-rate-limit.test.ts` and `tests/acceptance/workspace-validation.test.ts` with behavior assertions
-- Acceptance: `npm test` includes new route-level coverage
+- In `server/index.ts`, ensure duplicate approve/retry triggers for the same request cannot create duplicate execution attempts/events; return stable response when request is already executing
+- Acceptance: Concurrent or repeated actions on one request produce a single execution path and `npm test` stays green
 
-## Task 3: Formalize run health checks
-Priority: P1
-- Add `scripts/system_health_check.sh` to validate env, dependencies, tmux, and git readiness before starting run
-- Acceptance: Running script returns non-zero on misconfigurations
+## Task 3: Strengthen approval queue contract for operators
+Priority: P0
+- Extend `/api/submissions/queue` to support deterministic sort/filter metadata (status, age, retry/stale hints) so dashboard and operators can reliably triage
+- Acceptance: Queue response includes actionable status/age fields and preserves deterministic ordering

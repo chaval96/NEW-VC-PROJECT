@@ -37,6 +37,11 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   exit 1
 fi
 
+if [ "${DEV_FACTORY_VALIDATE_SCOPE:-true}" = "true" ]; then
+  echo "Validating backlog scope against VC product flow"
+  bash "$DIR/scripts/validate_backlog_scope.sh" "$DIR/docs/REVISION_BACKLOG.md"
+fi
+
 if [ ! -f "$DIR/tasks.md" ]; then
   echo "No tasks.md found in $DIR. Generating from backlog..."
   bash "$DIR/scripts/sync_tasks_from_backlog.sh"
@@ -93,3 +98,4 @@ echo "Log:    $RUN_LOG"
 echo "Watch:  tmux attach -t $SESSION"
 echo "Stop:   tmux kill-session -t $SESSION"
 echo "Report: logs/reports/night-shift-report.md"
+echo "Scope:  VC product backlog guard active"

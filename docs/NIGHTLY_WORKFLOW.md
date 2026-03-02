@@ -2,10 +2,12 @@
 
 ## Evening
 1. Update backlog priorities in `docs/REVISION_BACKLOG.md`.
-2. Generate `tasks.md` from backlog:
+2. Validate backlog scope before generation:
+   - `bash scripts/validate_backlog_scope.sh`
+3. Generate `tasks.md` from backlog:
    - `bash scripts/sync_tasks_from_backlog.sh`
-3. Add/refresh acceptance tests in `tests/acceptance/`.
-4. Start automation:
+4. Add/refresh acceptance tests in `tests/acceptance/`.
+5. Start automation:
    - `bash scripts/start_night.sh`
 
 ## Overnight (Strict Finalized Mode)
@@ -19,8 +21,10 @@
 ## Morning
 1. Run summary:
    - `bash scripts/morning_review.sh`
-2. Inspect diff + test status.
-3. Merge or revise backlog priorities.
+2. Read consolidated report:
+   - `logs/reports/night-shift-report.md`
+3. Inspect diff + test status.
+4. Merge or revise backlog priorities.
 
 ## Recommended Guardrail Env
 - `DEV_FACTORY_REVIEW_GATE_ENABLED=true`
@@ -30,4 +34,4 @@
 - `DEV_FACTORY_MAX_TOTAL_ITERATIONS=50`
 
 ## Principle
-Roadmap -> Backlog -> tasks.md -> Nightly run -> Morning human approval.
+Roadmap -> VC-scope backlog guard -> tasks.md -> Nightly run -> Morning human approval.
