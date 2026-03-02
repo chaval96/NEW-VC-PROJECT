@@ -1189,29 +1189,7 @@ async function runSubmissionWatchdog(): Promise<void> {
 }
 
 // Rate limiting middleware
-const globalRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // 100 requests per window per IP
-  message: { error: "Too many requests" },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
 
-const authRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 requests per window per IP
-  message: { error: "Too many requests" },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",").map((value) => value.trim()) : true
-  })
-);
-app.use(express.json({ limit: "5mb" }));
-app.use(globalRateLimit);
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "fundraising-formops-hub" });
