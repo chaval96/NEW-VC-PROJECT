@@ -160,7 +160,7 @@ EOPLAN
 )
 
   log "Planning phase (Sonnet)"
-  aider "${AIDER_ARGS[@]}" \
+  timeout 300 aider "${AIDER_ARGS[@]}" \
     --model "openrouter/anthropic/claude-sonnet-4" \
     --message "$planning_prompt" \
     --file "$TASKS_FILE" >> "$LOG_FILE" 2>&1 || log "Planning phase returned non-zero exit code"
@@ -205,7 +205,7 @@ EOTASK
     attempt=$((attempt + 1))
     log "Attempt $attempt/$MAX_RETRIES"
 
-    aider "${AIDER_ARGS[@]}" --message "$prompt" >> "$LOG_FILE" 2>&1 || true
+    timeout 600 aider "${AIDER_ARGS[@]}" --message "$prompt" >> "$LOG_FILE" 2>&1 || true
     run_lint
 
     if run_tests; then
