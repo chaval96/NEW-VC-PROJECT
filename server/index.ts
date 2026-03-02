@@ -1,6 +1,8 @@
 import cors from "cors";
 import dayjs from "dayjs";
 import express from "express";
+import rateLimit from "express-rate-limit";
+import { body, validationResult } from "express-validator";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import { URL } from "node:url";
@@ -34,6 +36,15 @@ function asyncHandler(fn: AsyncHandler): express.RequestHandler {
   return (req, res, next) => {
     fn(req, res, next).catch(next);
   };
+}
+
+function handleValidationErrors(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    res.status(400).json({ errors: errors.array() });
+    return;
+  }
+  next();
 }
 
 function statusToStage(status: SubmissionStatus): PipelineStage {
@@ -1177,12 +1188,30 @@ async function runSubmissionWatchdog(): Promise<void> {
   }
 }
 
+// Rate limiting middleware
+const globalRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 requests per window per IP
+  message: { error: "Too many requests" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 requests per window per IP
+  message: { error: "Too many requests" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",").map((value) => value.trim()) : true
   })
 );
 app.use(express.json({ limit: "5mb" }));
+app.use(globalRateLimit);
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "fundraising-formops-hub" });
@@ -1196,6 +1225,13 @@ const signupSchema = z.object({
 
 app.post(
   "/api/auth/signup",
+  authRateLimit,
+  [
+    body('email').isEmail().withMessage('Please enter a valid email address'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters long'),
+    body('name').notEmpty().withMessage('Name is required')
+  ],
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
     const parsed = signupSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -1215,6 +1251,7 @@ app.post(
 const verifySchema = z.object({ token: z.string().min(12) });
 app.post(
   "/api/auth/verify-email",
+  authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = verifySchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -1230,6 +1267,7 @@ app.post(
 const resendVerificationSchema = z.object({ email: authEmailSchema });
 app.post(
   "/api/auth/resend-verification",
+  authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = resendVerificationSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -1256,6 +1294,7 @@ app.post(
 const forgotPasswordSchema = z.object({ email: authEmailSchema });
 app.post(
   "/api/auth/forgot-password",
+  authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = forgotPasswordSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -1284,6 +1323,7 @@ const resetPasswordSchema = z.object({
 
 app.post(
   "/api/auth/reset-password",
+  authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = resetPasswordSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -1303,6 +1343,7 @@ const loginSchema = z.object({
 
 app.post(
   "/api/auth/login",
+  authRateLimit,
   asyncHandler(async (req, res) => {
     const parsed = loginSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -1481,6 +1522,10 @@ const createWorkspaceSchema = z.object({
 
 app.post(
   "/api/workspaces",
+  [
+    body('name').notEmpty().withMessage('Name is required').isLength({ max: 100 }).withMessage('Name must be 100 characters or less')
+  ],
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
     const parsed = createWorkspaceSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
