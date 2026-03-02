@@ -26,12 +26,11 @@ const port = Number(process.env.PORT ?? 8787);
 
 // Configure rate limiting
 const authRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes 
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // Limit each IP to 100 requests per windowMs
   standardHeaders: true, // Return rate limit info in the standardized `RateLimit-*` headers
-  legacyHeaders: true, // Enable the deprecated `X-RateLimit-*` headers for compatibility
-  message: "Too many requests, please try again later.",
-  headers: true, // Explicitly enable headers
+  legacyHeaders: false, // Disable deprecated headers
+  message: "Too many requests, please try again later."
 });
 
 const store = new StateStore();
