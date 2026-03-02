@@ -1232,12 +1232,6 @@ app.post(
     body('name').notEmpty().withMessage('Name is required')
   ],
   handleValidationErrors,
-  [
-    body('email').isEmail().withMessage('Please enter a valid email address'),
-    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters long'),
-    body('name').notEmpty().withMessage('Name is required')
-  ],
-  handleValidationErrors,
   asyncHandler(async (req, res) => {
     const parsed = signupSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -1528,10 +1522,6 @@ const createWorkspaceSchema = z.object({
 
 app.post(
   "/api/workspaces",
-  [
-    body('name').notEmpty().withMessage('Name is required').isLength({ max: 100 }).withMessage('Name must be 100 characters or less')
-  ],
-  handleValidationErrors,
   [
     body('name').notEmpty().withMessage('Name is required').isLength({ max: 100 }).withMessage('Name must be 100 characters or less')
   ],
