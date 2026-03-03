@@ -6,7 +6,7 @@ BACKLOG_FILE="${1:-$PROJECT_DIR/docs/REVISION_BACKLOG.md}"
 MAX_TASKS="${MAX_NIGHTLY_TASKS:-3}"
 STRICT_MODE="${DEV_FACTORY_SCOPE_GUARD_STRICT:-true}"
 
-REQUIRED_REGEX="${DEV_FACTORY_SCOPE_REQUIRED_REGEX:-submission|approval|workflow|orchestrator|import|research|queue|dashboard|evidence|workspace|firm|campaign}"
+REQUIRED_REGEX="${DEV_FACTORY_SCOPE_REQUIRED_REGEX:-submission|approval|workflow|orchestrator|import|research|queue|dashboard|evidence|workspace|firm|campaign|watchdog|retry|recovery|operator}"
 BLOCKED_REGEX="${DEV_FACTORY_SCOPE_BLOCKED_REGEX:-middleware|rate[ -]?limit|dev[ -]?factory|aider|tmux|ci quality gate|night run script hardening}"
 
 if [ ! -f "$BACKLOG_FILE" ]; then
