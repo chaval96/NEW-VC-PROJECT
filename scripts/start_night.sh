@@ -17,6 +17,9 @@ SYNC_TASKS="${DEV_FACTORY_SYNC_TASKS:-true}"
 USE_NIGHT_BRANCH="${DEV_FACTORY_USE_NIGHT_BRANCH:-true}"
 BASE_BRANCH="${DEV_FACTORY_BASE_BRANCH:-main}"
 BRANCH_PREFIX="${DEV_FACTORY_BRANCH_PREFIX:-nightly}"
+RUN_UNTIL_MORNING="${DEV_FACTORY_RUN_UNTIL_MORNING:-false}"
+RUN_UNTIL_LOCAL_HHMM="${DEV_FACTORY_RUN_UNTIL_LOCAL_HHMM:-08:00}"
+RUN_UNTIL_TZ="${DEV_FACTORY_RUN_UNTIL_TZ:-UTC}"
 
 if [ ! -d "$DIR" ]; then
   echo "ERROR: Project directory not found: $DIR"
@@ -83,6 +86,11 @@ mkdir -p "$DIR/logs"
 
 echo "Tasks found: $TASK_COUNT"
 grep '^## Task' "$DIR/tasks.md" | sed 's/^## /  - /'
+if [ "$RUN_UNTIL_MORNING" = "true" ]; then
+  echo "Mode: run-until-morning enabled (${RUN_UNTIL_LOCAL_HHMM} ${RUN_UNTIL_TZ})"
+else
+  echo "Mode: single-wave (set DEV_FACTORY_RUN_UNTIL_MORNING=true for all-night mode)"
+fi
 echo ""
 echo "Starting in 3 seconds... (Ctrl+C to cancel)"
 sleep 3

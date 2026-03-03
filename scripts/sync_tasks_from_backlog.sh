@@ -4,10 +4,15 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKLOG_FILE="${1:-$PROJECT_DIR/docs/REVISION_BACKLOG.md}"
 OUTPUT_FILE="${2:-$PROJECT_DIR/tasks.md}"
-MAX_TASKS="${MAX_NIGHTLY_TASKS:-3}"
+MAX_TASKS="${MAX_NIGHTLY_TASKS:-6}"
 
 if [ ! -f "$BACKLOG_FILE" ]; then
   echo "ERROR: backlog file not found: $BACKLOG_FILE"
+  exit 1
+fi
+
+if ! [[ "$MAX_TASKS" =~ ^[0-9]+$ ]] || [ "$MAX_TASKS" -le 0 ]; then
+  echo "ERROR: MAX_NIGHTLY_TASKS must be a positive integer (current: $MAX_TASKS)"
   exit 1
 fi
 
@@ -49,4 +54,4 @@ while IFS= read -r line; do
   idx=$((idx + 1))
 done <<< "$lines"
 
-echo "Generated $(($idx - 1)) tasks into $OUTPUT_FILE"
+echo "Generated $(($idx - 1)) tasks into $OUTPUT_FILE (MAX_NIGHTLY_TASKS=$MAX_TASKS)"

@@ -25,10 +25,11 @@ AIDER_TASK_TIMEOUT_SECONDS="${DEV_FACTORY_AIDER_TASK_TIMEOUT_SECONDS:-600}"
 BACKLOG_FILE="${DEV_FACTORY_BACKLOG_FILE:-$PROJECT_DIR/docs/REVISION_BACKLOG.md}"
 
 REVIEW_GATE_ENABLED="${DEV_FACTORY_REVIEW_GATE_ENABLED:-true}"
-REVIEW_MODEL="${DEV_FACTORY_REVIEW_MODEL:-openrouter/anthropic/claude-sonnet-4}"
+REVIEW_MODEL="${DEV_FACTORY_REVIEW_MODEL:-anthropic/claude-sonnet-4}"
 REVIEW_ENDPOINT="${DEV_FACTORY_REVIEW_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
-REVIEW_MAX_DIFF_CHARS="${DEV_FACTORY_REVIEW_MAX_DIFF_CHARS:-90000}"
+REVIEW_MAX_DIFF_CHARS="${DEV_FACTORY_REVIEW_MAX_DIFF_CHARS:-24000}"
 REVIEW_FAIL_OPEN="${DEV_FACTORY_REVIEW_FAIL_OPEN:-false}"
+REVIEW_FAIL_OPEN_ON_API_ERROR="${DEV_FACTORY_REVIEW_FAIL_OPEN_ON_API_ERROR:-true}"
 
 BUDGET_GUARD_ENABLED="${DEV_FACTORY_BUDGET_GUARD_ENABLED:-true}"
 BUDGET_ENDPOINT="${DEV_FACTORY_BUDGET_ENDPOINT:-https://openrouter.ai/api/v1/key}"
@@ -36,6 +37,10 @@ BUDGET_MIN_REMAINING_USD="${DEV_FACTORY_MIN_REMAINING_USD:-1.00}"
 BUDGET_MAX_USAGE_USD="${DEV_FACTORY_MAX_USAGE_USD:-0}"
 BUDGET_FAIL_OPEN="${DEV_FACTORY_BUDGET_FAIL_OPEN:-true}"
 BUDGET_CHECK_INTERVAL_SECONDS="${DEV_FACTORY_BUDGET_CHECK_INTERVAL_SECONDS:-300}"
+RUN_UNTIL_MORNING="${DEV_FACTORY_RUN_UNTIL_MORNING:-false}"
+RUN_UNTIL_LOCAL_HHMM="${DEV_FACTORY_RUN_UNTIL_LOCAL_HHMM:-08:00}"
+RUN_UNTIL_TZ="${DEV_FACTORY_RUN_UNTIL_TZ:-UTC}"
+SYNC_TASKS_EACH_WAVE="${DEV_FACTORY_SYNC_TASKS_EACH_WAVE:-true}"
 
 TEST_OUTPUT="$(mktemp /tmp/dev_factory_test_output.XXXXXX)"
 REVIEW_OUTPUT="$(mktemp /tmp/dev_factory_review_output.XXXXXX)"
@@ -53,6 +58,7 @@ LOCKED_ACCEPTANCE=false
 ITERATION_CAP_HIT=false
 BUDGET_BLOCKED=false
 REVIEW_FEEDBACK=""
+RUN_UNTIL_TS=0
 
 AIDER_ARGS=(--yes-always --no-stream)
 if [ -f "$PROJECT_DIR/.aider.conf.yml" ]; then
@@ -61,6 +67,62 @@ fi
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+is_true() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+configure_run_until_cutoff() {
+  local now_ts
+  local today
+  local cutoff
+
+  if ! is_true "$RUN_UNTIL_MORNING"; then
+    RUN_UNTIL_TS=0
+    return 0
+  fi
+
+  if ! today="$(TZ="$RUN_UNTIL_TZ" date '+%Y-%m-%d' 2>/dev/null)"; then
+    log "Invalid DEV_FACTORY_RUN_UNTIL_TZ='$RUN_UNTIL_TZ'; disabling run-until mode"
+    RUN_UNTIL_MORNING=false
+    RUN_UNTIL_TS=0
+    return 1
+  fi
+
+  if ! cutoff="$(TZ="$RUN_UNTIL_TZ" date -d "$today $RUN_UNTIL_LOCAL_HHMM:00" +%s 2>/dev/null)"; then
+    log "Invalid DEV_FACTORY_RUN_UNTIL_LOCAL_HHMM='$RUN_UNTIL_LOCAL_HHMM'; expected HH:MM; disabling run-until mode"
+    RUN_UNTIL_MORNING=false
+    RUN_UNTIL_TS=0
+    return 1
+  fi
+
+  now_ts="$(date +%s)"
+  if [ "$cutoff" -le "$now_ts" ]; then
+    cutoff="$(TZ="$RUN_UNTIL_TZ" date -d "tomorrow $RUN_UNTIL_LOCAL_HHMM:00" +%s 2>/dev/null || true)"
+  fi
+
+  if [ -z "$cutoff" ]; then
+    log "Failed to resolve run-until cutoff; disabling run-until mode"
+    RUN_UNTIL_MORNING=false
+    RUN_UNTIL_TS=0
+    return 1
+  fi
+
+  RUN_UNTIL_TS="$cutoff"
+  return 0
+}
+
+run_until_cutoff_reached() {
+  if ! is_true "$RUN_UNTIL_MORNING"; then
+    return 1
+  fi
+
+  [ "$RUN_UNTIL_TS" -gt 0 ] || return 1
+  [ "$(date +%s)" -ge "$RUN_UNTIL_TS" ]
 }
 
 unlock_acceptance_tests() {
@@ -89,7 +151,10 @@ preflight() {
   log "Max total iterations: $MAX_TOTAL_ITERATIONS"
   log "Planning enabled: $PLANNING_ENABLED"
   log "Review gate enabled: $REVIEW_GATE_ENABLED ($REVIEW_MODEL)"
+  log "Review max diff chars: $REVIEW_MAX_DIFF_CHARS"
+  log "Review fail-open on API error: $REVIEW_FAIL_OPEN_ON_API_ERROR"
   log "Budget guard enabled: $BUDGET_GUARD_ENABLED"
+  log "Run-until-morning mode: $RUN_UNTIL_MORNING"
 
   if [ ! -f "$TASKS_FILE" ]; then
     log "ERROR: tasks file not found"
@@ -151,6 +216,11 @@ EOIGNORE
   if ! grep -q '^tests/acceptance/$' "$PROJECT_DIR/.aiderignore"; then
     echo "tests/acceptance/" >> "$PROJECT_DIR/.aiderignore"
     log "Added tests/acceptance/ to .aiderignore"
+  fi
+
+  configure_run_until_cutoff || true
+  if is_true "$RUN_UNTIL_MORNING" && [ "$RUN_UNTIL_TS" -gt 0 ]; then
+    log "Run-until cutoff: $(date -d "@$RUN_UNTIL_TS" '+%Y-%m-%d %H:%M:%S %Z') (TZ=$RUN_UNTIL_TZ)"
   fi
 
   log ""
@@ -247,7 +317,13 @@ run_review_gate() {
   : > "$REVIEW_TASK_FILE"
 
   git add -N . >/dev/null 2>&1 || true
-  git diff -- . ':(exclude)tests/acceptance' | head -c "$REVIEW_MAX_DIFF_CHARS" > "$REVIEW_DIFF_FILE"
+  {
+    echo "Changed files:"
+    git diff --name-only -- . ':(exclude)tests/acceptance' | sed 's/^/- /'
+    echo
+    echo "Patch (truncated):"
+    git diff -- . ':(exclude)tests/acceptance'
+  } | head -c "$REVIEW_MAX_DIFF_CHARS" > "$REVIEW_DIFF_FILE"
   printf '%s\n' "$task_body" > "$REVIEW_TASK_FILE"
 
   if [ ! -s "$REVIEW_DIFF_FILE" ]; then
@@ -262,7 +338,8 @@ run_review_gate() {
       --task-name "$task_name" \
       --task-body-file "$REVIEW_TASK_FILE" \
       --diff-file "$REVIEW_DIFF_FILE" \
-      --fail-open "$REVIEW_FAIL_OPEN" > "$REVIEW_OUTPUT" 2>>"$LOG_FILE"; then
+      --fail-open "$REVIEW_FAIL_OPEN" \
+      --fail-open-on-api-error "$REVIEW_FAIL_OPEN_ON_API_ERROR" > "$REVIEW_OUTPUT" 2>>"$LOG_FILE"; then
     summary="$(python3 - "$REVIEW_OUTPUT" <<'PY'
 import json
 import sys
@@ -577,6 +654,37 @@ log_backlog_progress() {
   fi
 }
 
+count_open_backlog_items() {
+  if [ ! -f "$BACKLOG_FILE" ]; then
+    echo "0"
+    return
+  fi
+
+  grep -Ec '^- \[ \] P[0-3] \|' "$BACKLOG_FILE" || true
+}
+
+refresh_tasks_from_backlog() {
+  local refresh_output
+
+  if [ "$SYNC_TASKS_EACH_WAVE" != "true" ]; then
+    log "Task refresh skipped (DEV_FACTORY_SYNC_TASKS_EACH_WAVE=false)"
+    return 1
+  fi
+
+  if [ ! -x "$PROJECT_DIR/scripts/sync_tasks_from_backlog.sh" ]; then
+    log "Task refresh unavailable: scripts/sync_tasks_from_backlog.sh is missing or not executable"
+    return 1
+  fi
+
+  if refresh_output="$(bash "$PROJECT_DIR/scripts/sync_tasks_from_backlog.sh" "$BACKLOG_FILE" "$TASKS_FILE" 2>&1)"; then
+    log "Task refresh: $refresh_output"
+    return 0
+  fi
+
+  log "Task refresh failed: $refresh_output"
+  return 1
+}
+
 main() {
   preflight
 
@@ -595,49 +703,92 @@ main() {
 
   planning_phase "$global_rules"
 
+  local wave=1
+  local run_until_stopped=false
   local tasks=()
-  while IFS= read -r task_line; do
-    [ -n "$task_line" ] || continue
-    tasks+=("$task_line")
-  done < <(extract_task_names)
-
-  local total="${#tasks[@]}"
-
-  if [ "$total" -eq 0 ]; then
-    log "No tasks found in tasks.md. Add headings like: ## Task 1: ..."
-    exit 1
-  fi
-
-  log "Execution phase"
-  log "Tasks found: $total"
-  log ""
-
-  local index=0
+  local total
+  local index
   local task_name
   local task_body
-  for task_name in "${tasks[@]}"; do
-    if [ "$CONSECUTIVE_FAILS" -ge "$MAX_CONSEC_FAILS" ]; then
-      SKIPPED=$((total - index))
-      log "Circuit breaker triggered ($CONSECUTIVE_FAILS consecutive failures)"
+  local open_count
+
+  while true; do
+    tasks=()
+    while IFS= read -r task_line; do
+      [ -n "$task_line" ] || continue
+      tasks+=("$task_line")
+    done < <(extract_task_names)
+
+    total="${#tasks[@]}"
+    if [ "$total" -eq 0 ]; then
+      if [ "$wave" -eq 1 ]; then
+        log "No tasks found in tasks.md. Add headings like: ## Task 1: ..."
+        exit 1
+      fi
+      log "No tasks available for next wave; stopping"
       break
     fi
 
-    if [ "$ITERATION_CAP_HIT" = true ]; then
-      SKIPPED=$((total - index))
-      log "Global iteration cap stop activated"
+    log "Execution phase (wave $wave)"
+    log "Tasks found: $total"
+    log ""
+
+    index=0
+    for task_name in "${tasks[@]}"; do
+      if [ "$CONSECUTIVE_FAILS" -ge "$MAX_CONSEC_FAILS" ]; then
+        SKIPPED=$((SKIPPED + total - index))
+        log "Circuit breaker triggered ($CONSECUTIVE_FAILS consecutive failures)"
+        break
+      fi
+
+      if [ "$ITERATION_CAP_HIT" = true ]; then
+        SKIPPED=$((SKIPPED + total - index))
+        log "Global iteration cap stop activated"
+        break
+      fi
+
+      if [ "$BUDGET_BLOCKED" = true ]; then
+        SKIPPED=$((SKIPPED + total - index))
+        log "Budget guard stop activated"
+        break
+      fi
+
+      index=$((index + 1))
+      log "[$index/$total]"
+      task_body="$(extract_task_body "$task_name")"
+      run_task "$task_name" "$task_body" "$global_rules"
+    done
+
+    log_backlog_progress
+
+    if [ "$CONSECUTIVE_FAILS" -ge "$MAX_CONSEC_FAILS" ] || [ "$ITERATION_CAP_HIT" = true ] || [ "$BUDGET_BLOCKED" = true ]; then
       break
     fi
 
-    if [ "$BUDGET_BLOCKED" = true ]; then
-      SKIPPED=$((total - index))
-      log "Budget guard stop activated"
+    if ! is_true "$RUN_UNTIL_MORNING"; then
       break
     fi
 
-    index=$((index + 1))
-    log "[$index/$total]"
-    task_body="$(extract_task_body "$task_name")"
-    run_task "$task_name" "$task_body" "$global_rules"
+    if run_until_cutoff_reached; then
+      run_until_stopped=true
+      log "Run-until cutoff reached; stopping"
+      break
+    fi
+
+    open_count="$(count_open_backlog_items)"
+    if [ "$open_count" -eq 0 ]; then
+      log "No open backlog items remain; stopping before cutoff"
+      break
+    fi
+
+    if ! refresh_tasks_from_backlog; then
+      log "Unable to refresh tasks for next wave; stopping run-until mode"
+      break
+    fi
+
+    wave=$((wave + 1))
+    log "Continuing to wave $wave"
+    log ""
   done
 
   local end_ts
@@ -658,8 +809,10 @@ main() {
   if [ "$BUDGET_BLOCKED" = true ]; then
     log "Run stop reason: budget_guard"
   fi
+  if [ "$run_until_stopped" = true ]; then
+    log "Run stop reason: run_until_cutoff"
+  fi
 
-  log_backlog_progress
   log "Recent commits:"
   git log --oneline -10 >> "$LOG_FILE" 2>/dev/null || true
   emit_night_shift_report

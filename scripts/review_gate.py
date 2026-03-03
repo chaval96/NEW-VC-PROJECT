@@ -2,7 +2,7 @@
 import argparse
 import json
 import re
-import sys
+import urllib.error
 import urllib.request
 
 
@@ -27,6 +27,13 @@ def parse_bool(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def normalize_model(value: str) -> str:
+    model = str(value or "").strip()
+    if model.startswith("openrouter/"):
+        model = model[len("openrouter/") :]
+    return model
+
+
 def to_list(value):
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -41,27 +48,23 @@ def extract_json_block(text: str):
     if not raw:
         return None
 
-    # exact JSON
     try:
         return json.loads(raw)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
-    # fenced JSON
     fenced = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
     if fenced:
         try:
             return json.loads(fenced)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
-    # first object-like block
     match = re.search(r"\\{[\\s\\S]*\\}", raw)
     if match:
-        candidate = match.group(0)
         try:
-            return json.loads(candidate)
-        except Exception:  # noqa: BLE001
+            return json.loads(match.group(0))
+        except Exception:
             return None
 
     return None
@@ -69,7 +72,7 @@ def extract_json_block(text: str):
 
 def call_review(api_key: str, endpoint: str, model: str, prompt: str):
     payload = {
-        "model": model,
+        "model": normalize_model(model),
         "temperature": 0,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -89,8 +92,40 @@ def call_review(api_key: str, endpoint: str, model: str, prompt: str):
         method="POST",
     )
 
-    with urllib.request.urlopen(request, timeout=45) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            body = ""
+        suffix = f" body={body[:600]}" if body else ""
+        raise RuntimeError(f"HTTP {exc.code} {exc.reason}{suffix}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Network error: {exc.reason}") from exc
+
+
+def extract_content(response: dict) -> str:
+    try:
+        content = response["choices"][0]["message"]["content"]
+    except Exception as exc:
+        raise ValueError(f"Malformed review response: {exc}") from exc
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                text = str(part.get("text", "")).strip()
+                if text:
+                    parts.append(text)
+        return "\n".join(parts).strip()
+
+    return str(content)
 
 
 def main() -> int:
@@ -102,9 +137,11 @@ def main() -> int:
     parser.add_argument("--task-body-file", required=True)
     parser.add_argument("--diff-file", required=True)
     parser.add_argument("--fail-open", default="false")
+    parser.add_argument("--fail-open-on-api-error", default="true")
     args = parser.parse_args()
 
     fail_open = parse_bool(args.fail_open)
+    fail_open_on_api_error = parse_bool(args.fail_open_on_api_error)
 
     task_body = open(args.task_body_file, "r", encoding="utf-8").read()
     diff_text = open(args.diff_file, "r", encoding="utf-8").read()
@@ -139,8 +176,8 @@ Return JSON only.
 
     try:
         response = call_review(args.api_key, args.endpoint, args.model, prompt)
-    except Exception as exc:  # noqa: BLE001
-        if fail_open:
+    except Exception as exc:
+        if fail_open_on_api_error or fail_open:
             print(
                 json.dumps(
                     {
@@ -170,15 +207,14 @@ Return JSON only.
         return 1
 
     try:
-        content = response["choices"][0]["message"]["content"]
-    except Exception as exc:  # noqa: BLE001
-        content = ""
+        content = extract_content(response)
+    except Exception as exc:
         if not fail_open:
             print(
                 json.dumps(
                     {
                         "decision": "FAIL",
-                        "summary": f"Malformed review response: {exc}",
+                        "summary": str(exc),
                         "blockers": ["review_response_malformed"],
                         "required_fixes": ["Retry review with stable model output"],
                         "risks": [],
@@ -187,6 +223,7 @@ Return JSON only.
                 )
             )
             return 1
+        content = ""
 
     parsed = extract_json_block(content)
     if parsed is None:
