@@ -1,5 +1,5 @@
-import { validateStatusTransition } from "../index";
-import { SubmissionRequestStatus } from "../domain/types";
+import { describe, expect, test } from "vitest";
+import { validateStatusTransition } from "../index.js";
 
 describe("validateStatusTransition", () => {
   test("valid transitions from pending_approval", () => {

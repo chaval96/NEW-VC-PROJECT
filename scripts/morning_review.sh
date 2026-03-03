@@ -12,6 +12,7 @@ else
 fi
 
 DIR="${DEV_FACTORY_DIR:-$HOME/project}"
+MORNING_TEST_CMD="${DEV_FACTORY_MORNING_TEST_CMD:-npx vitest run tests/unit/sanity.test.ts}"
 cd "$DIR"
 
 echo "MORNING REVIEW"
@@ -20,37 +21,39 @@ echo ""
 
 REPORT="logs/reports/night-shift-report.md"
 if [ -f "$REPORT" ]; then
-  echo "-- NIGHT-SHIFT-REPORT --"
-  echo "$REPORT"
-  sed -n '1,180p' "$REPORT"
+  echo "-- NIGHT-SHIFT REPORT --"
+  echo "Path: $REPORT"
+  awk '
+    /^## Final Outcome/ { in_section=1 }
+    /^## / && in_section && !/^## Final Outcome/ { exit }
+    in_section { print }
+  ' "$REPORT" || true
   echo ""
 fi
 
-LOG=$(ls -t logs/night_*.log 2>/dev/null | head -1 || true)
+LOG="$(ls -t logs/night_*.log 2>/dev/null | head -1 || true)"
 if [ -z "$LOG" ]; then
+  echo "-- LATEST RUN --"
   echo "No logs found."
 else
-  echo "-- RESULTS --"
-  grep -E "(Completed:|Failed:|Skipped:|Circuit breaker|NIGHT RUN COMPLETE)" "$LOG" | tail -15 || true
+  echo "-- LATEST RUN --"
+  echo "Log: $LOG"
+  grep -E "(NIGHT RUN COMPLETE|Duration \(minutes\):|Completed:|Failed:|Skipped:|Run stop reason:|Backlog progress:|Budget night usage:)" "$LOG" | tail -20 || true
 fi
+
 
 echo ""
 echo "-- COMMITS (last 12h) --"
-git log --oneline --since="12 hours ago" || true
+git log --oneline --since="12 hours ago" | head -20 || true
 
 echo ""
-echo "-- FILES CHANGED --"
-git diff --name-only HEAD~10..HEAD 2>/dev/null | head -20 || true
+echo "-- FILES CHANGED (recent) --"
+git diff --name-only HEAD~20..HEAD 2>/dev/null | head -30 || true
 
 echo ""
-echo "-- TEST STATUS --"
-npx vitest run 2>&1 | tail -20 || true
-
-echo ""
-echo "-- NEXT --"
-echo "1) Review diffs: git diff HEAD~5..HEAD"
-echo "2) If good: push/merge"
-echo "3) If not: update tasks.md and rerun"
+echo "-- TEST STATUS (morning quick check) --"
+echo "Command: $MORNING_TEST_CMD"
+bash -lc "$MORNING_TEST_CMD" 2>&1 | tail -30 || true
 
 echo ""
 echo "-- BACKLOG PROGRESS --"
@@ -63,3 +66,10 @@ if [ -f docs/REVISION_BACKLOG.md ]; then
 else
   echo "docs/REVISION_BACKLOG.md not found"
 fi
+
+
+echo ""
+echo "-- NEXT --"
+echo "1) Review report and diff details"
+echo "2) Merge/push if quality is acceptable"
+echo "3) Adjust backlog priorities before next night run"

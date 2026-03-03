@@ -5,8 +5,19 @@ DIR="${DEV_FACTORY_DIR:-$HOME/project}"
 cd "$DIR"
 
 LOG_FILE="${1:-}"
+LOG_FILE_PROVIDED=false
+if [ -n "$LOG_FILE" ]; then
+  LOG_FILE_PROVIDED=true
+fi
+
 if [ -z "$LOG_FILE" ]; then
-  LOG_FILE="$(ls -1t logs/night_*.log 2>/dev/null | head -n 1 || true)"
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    if grep -q 'NIGHT RUN COMPLETE' "$candidate"; then
+      LOG_FILE="$candidate"
+      break
+    fi
+  done < <(ls -1t logs/night_*.log 2>/dev/null || true)
 fi
 
 if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
@@ -15,6 +26,10 @@ if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
 fi
 
 if ! grep -q 'NIGHT RUN COMPLETE' "$LOG_FILE"; then
+  if [ "$LOG_FILE_PROVIDED" = false ]; then
+    echo "ERROR: no completed night run log found yet" >&2
+    exit 2
+  fi
   echo "ERROR: run is not completed yet" >&2
   exit 2
 fi
@@ -39,6 +54,12 @@ duration_line="$(grep -E 'Duration \(minutes\):' "$LOG_FILE" | tail -1 || true)"
 iterations_line="$(grep -E 'Total iterations:' "$LOG_FILE" | tail -1 || true)"
 backlog_line="$(grep -E 'Backlog progress:' "$LOG_FILE" | tail -1 || true)"
 stop_reason_line="$(grep -E 'Run stop reason:' "$LOG_FILE" | tail -1 || true)"
+review_failures_count="$(grep -Ec 'Failure category: review_failure' "$LOG_FILE" || true)"
+test_failures_count="$(grep -Ec 'Failure category: test_failure' "$LOG_FILE" || true)"
+budget_failures_count="$(grep -Ec 'Failure category: budget_guard' "$LOG_FILE" || true)"
+review_pass_count="$(grep -Ec 'Review gate passed' "$LOG_FILE" || true)"
+budget_checks_count="$(grep -Ec 'Budget guard:' "$LOG_FILE" || true)"
+budget_night_usage_line="$(grep -E 'Budget night usage:' "$LOG_FILE" | tail -1 || true)"
 
 if [ -z "$summary_completed" ]; then summary_completed="n/a"; fi
 if [ -z "$summary_failed" ]; then summary_failed="n/a"; fi
@@ -87,6 +108,24 @@ fi
     echo "- ${stop_reason_line#*] }"
   else
     echo "- Run stop reason: all_tasks_processed_or_circuit_breaker_not_triggered"
+  fi
+  echo
+
+  echo "## Executive Summary"
+  if [ "$summary_failed" = "0" ] && [ "$summary_completed" != "0" ]; then
+    echo "- Overall: run completed tasks successfully with no failed tasks."
+  elif [ "$summary_failed" = "0" ] && [ "$summary_completed" = "0" ]; then
+    echo "- Overall: run finished without task completion (check stop reason and backlog state)."
+  else
+    echo "- Overall: run ended with failures; inspect timeline and review feedback before merge."
+  fi
+  echo "- Review gate passes: **$review_pass_count**"
+  echo "- Review gate failures: **$review_failures_count**"
+  echo "- Test failures encountered: **$test_failures_count**"
+  echo "- Budget guard checks: **$budget_checks_count**"
+  echo "- Budget guard failure events: **$budget_failures_count**"
+  if [ -n "$budget_night_usage_line" ]; then
+    echo "- ${budget_night_usage_line#*] }"
   fi
   echo
 

@@ -12,6 +12,7 @@
 
 ## Overnight (Strict Finalized Mode)
 - Planner: enabled by default (`DEV_FACTORY_ENABLE_PLANNING=true`) with local fallback plan generation.
+- Planner model is configurable (`DEV_FACTORY_PLANNING_MODEL`) and should match your approved quality/cost profile.
 - Coder: Aider runs task attempts with per-task timeout.
 - Test gate: wrapper runs lint/test after each attempt.
 - Review gate: `scripts/review_gate.py` must return `PASS` before task completion.
@@ -20,6 +21,7 @@
 - Budget reliability: budget endpoint checks include retry/backoff; checks are metadata calls (not model token generation).
 - Completion gate: only after test + review pass does runner commit and mark backlog item as done.
 - Run-until-morning mode: when `DEV_FACTORY_RUN_UNTIL_MORNING=true`, runner keeps refreshing tasks from backlog in waves until cutoff.
+- Scope guard and task generation should evaluate the same top-N backlog window (`MAX_NIGHTLY_TASKS`).
 
 ## Morning
 1. Run summary:
@@ -31,6 +33,7 @@
 
 ## Recommended Guardrail Env
 - `DEV_FACTORY_REVIEW_GATE_ENABLED=true`
+- `DEV_FACTORY_PLANNING_MODEL=anthropic/claude-sonnet-4`
 - `DEV_FACTORY_REVIEW_MODEL=anthropic/claude-sonnet-4`
 - `DEV_FACTORY_REVIEW_MAX_DIFF_CHARS=24000`
 - `DEV_FACTORY_REVIEW_FAIL_OPEN_ON_API_ERROR=false`
@@ -47,6 +50,7 @@
 - `DEV_FACTORY_BUDGET_API_TIMEOUT_SECONDS=20`
 - `DEV_FACTORY_MAX_TOTAL_ITERATIONS=120`
 - `MAX_NIGHTLY_TASKS=6`
+- `DEV_FACTORY_MORNING_TEST_CMD=npx vitest run tests/unit/sanity.test.ts`
 - `DEV_FACTORY_RUN_UNTIL_MORNING=true`
 - `DEV_FACTORY_RUN_UNTIL_LOCAL_HHMM=08:00`
 - `DEV_FACTORY_RUN_UNTIL_TZ=Europe/Madrid`

@@ -10,7 +10,7 @@ import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { StateStore } from "./domain/store.js";
 import { buildTemplateProfile, SEED_FIRM_WEBSITES } from "./domain/seed.js";
-import type { AssessmentResult, CompanyProfile, Firm, PipelineStage, SubmissionStatus, SubmissionRequestStatus, Workspace } from "./domain/types.js";
+import type { AssessmentResult, CompanyProfile, Firm, PipelineStage, SubmissionRequest, SubmissionStatus, SubmissionRequestStatus, Workspace } from "./domain/types.js";
 import { CampaignOrchestrator } from "./orchestrator/workflow.js";
 import { buildOverview, getCachedOverview } from "./services/analytics.js";
 import { AuthService, type AuthUser } from "./services/auth-service.js";
@@ -2575,12 +2575,6 @@ app.post(
         continue;
       }
 
-      const existing = store.getSubmissionRequest(requestId, workspaceId);
-      if (!existing) {
-        failed.push({ id: requestId, message: "Submission request not found" });
-        continue;
-      }
-
       try {
         ensureValidTransition(existing, "approved");
         const approved = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
@@ -2605,8 +2599,8 @@ app.post(
           });
         }
       } catch (error) {
-        if (error instanceof Error && error.status === 409) {
-          res.status(409).json({ message: error.message });
+        if ((error as Error & { status?: number }).status === 409) {
+          res.status(409).json({ message: error instanceof Error ? error.message : "Invalid status transition" });
           return;
         }
         failed.push({
@@ -2652,12 +2646,6 @@ app.post(
         continue;
       }
 
-      const existing = store.getSubmissionRequest(requestId, workspaceId);
-      if (!existing) {
-        failed.push({ id: requestId, message: "Submission request not found" });
-        continue;
-      }
-
       try {
         ensureValidTransition(existing, "rejected");
         const updated = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
@@ -2674,8 +2662,8 @@ app.post(
         }
         rejected += 1;
       } catch (error) {
-        if (error instanceof Error && error.status === 409) {
-          res.status(409).json({ message: error.message });
+        if ((error as Error & { status?: number }).status === 409) {
+          res.status(409).json({ message: error instanceof Error ? error.message : "Invalid status transition" });
           return;
         }
         failed.push({

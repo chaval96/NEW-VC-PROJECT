@@ -21,6 +21,7 @@ LINT_CMD="${DEV_FACTORY_LINT_CMD:-npx tsc --noEmit}"
 
 PLANNING_ENABLED="${DEV_FACTORY_ENABLE_PLANNING:-true}"
 PLANNING_TIMEOUT_SECONDS="${DEV_FACTORY_PLANNING_TIMEOUT_SECONDS:-120}"
+PLANNING_MODEL="${DEV_FACTORY_PLANNING_MODEL:-anthropic/claude-sonnet-4}"
 AIDER_TASK_TIMEOUT_SECONDS="${DEV_FACTORY_AIDER_TASK_TIMEOUT_SECONDS:-600}"
 BACKLOG_FILE="${DEV_FACTORY_BACKLOG_FILE:-$PROJECT_DIR/docs/REVISION_BACKLOG.md}"
 
@@ -229,6 +230,7 @@ preflight() {
   log "Max consecutive failures: $MAX_CONSEC_FAILS"
   log "Max total iterations: $MAX_TOTAL_ITERATIONS"
   log "Planning enabled: $PLANNING_ENABLED"
+  log "Planning model: $PLANNING_MODEL"
   log "Review gate enabled: $REVIEW_GATE_ENABLED ($REVIEW_MODEL)"
   log "Review max diff chars: $REVIEW_MAX_DIFF_CHARS"
   log "Review fail-open on API error: $REVIEW_FAIL_OPEN_ON_API_ERROR"
@@ -250,6 +252,11 @@ preflight() {
 
   if [ -z "${OPENROUTER_API_KEY:-}" ]; then
     log "ERROR: OPENROUTER_API_KEY is not set"
+    exit 1
+  fi
+
+  if [ "$PLANNING_ENABLED" = "true" ] && [ -z "$PLANNING_MODEL" ]; then
+    log "ERROR: DEV_FACTORY_PLANNING_MODEL must not be empty when planning is enabled"
     exit 1
   fi
 
@@ -590,9 +597,9 @@ Do not modify anything under tests/acceptance/.
 EOPLAN
 )
 
-  log "Planning phase (Sonnet)"
+  log "Planning phase ($PLANNING_MODEL)"
   if timeout "$PLANNING_TIMEOUT_SECONDS" aider "${AIDER_ARGS[@]}" \
-    --model "openrouter/anthropic/claude-sonnet-4" \
+    --model "$PLANNING_MODEL" \
     --message "$planning_prompt" \
     --file "$TASKS_FILE" >> "$LOG_FILE" 2>&1; then
     if [ -f "$PROJECT_DIR/plan.md" ]; then

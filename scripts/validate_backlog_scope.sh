@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKLOG_FILE="${1:-$PROJECT_DIR/docs/REVISION_BACKLOG.md}"
-MAX_TASKS="${MAX_NIGHTLY_TASKS:-3}"
+MAX_TASKS="${MAX_NIGHTLY_TASKS:-6}"
 STRICT_MODE="${DEV_FACTORY_SCOPE_GUARD_STRICT:-true}"
 
 REQUIRED_REGEX="${DEV_FACTORY_SCOPE_REQUIRED_REGEX:-submission|approval|workflow|orchestrator|import|research|queue|dashboard|evidence|workspace|firm|campaign|watchdog|retry|recovery|operator}"
