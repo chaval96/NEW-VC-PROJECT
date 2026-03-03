@@ -53,14 +53,14 @@ def extract_json_block(text: str):
     except Exception:
         pass
 
-    fenced = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
+    fenced = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
     if fenced:
         try:
             return json.loads(fenced)
         except Exception:
             pass
 
-    match = re.search(r"\\{[\\s\\S]*\\}", raw)
+    match = re.search(r"\{[\s\S]*\}", raw)
     if match:
         try:
             return json.loads(match.group(0))
@@ -257,6 +257,10 @@ Return JSON only.
         return 1
 
     decision = str(parsed.get("decision", "")).strip().upper()
+    if decision in {"APPROVED", "APPROVE", "ACCEPTED", "ACCEPT"}:
+        decision = "PASS"
+    elif decision in {"REJECTED", "REJECT", "BLOCK", "BLOCKED"}:
+        decision = "FAIL"
     summary = str(parsed.get("summary", "")).strip()
     blockers = to_list(parsed.get("blockers"))
     required_fixes = to_list(parsed.get("required_fixes"))
