@@ -35,6 +35,7 @@ BUDGET_GUARD_ENABLED="${DEV_FACTORY_BUDGET_GUARD_ENABLED:-true}"
 BUDGET_ENDPOINT="${DEV_FACTORY_BUDGET_ENDPOINT:-https://openrouter.ai/api/v1/key}"
 BUDGET_MIN_REMAINING_USD="${DEV_FACTORY_MIN_REMAINING_USD:-1.00}"
 BUDGET_MAX_USAGE_USD="${DEV_FACTORY_MAX_USAGE_USD:-0}"
+BUDGET_MAX_NIGHT_USAGE_USD="${DEV_FACTORY_MAX_NIGHT_USAGE_USD:-0}"
 BUDGET_FAIL_OPEN="${DEV_FACTORY_BUDGET_FAIL_OPEN:-true}"
 BUDGET_CHECK_INTERVAL_SECONDS="${DEV_FACTORY_BUDGET_CHECK_INTERVAL_SECONDS:-300}"
 RUN_UNTIL_MORNING="${DEV_FACTORY_RUN_UNTIL_MORNING:-false}"
@@ -59,6 +60,9 @@ ITERATION_CAP_HIT=false
 BUDGET_BLOCKED=false
 REVIEW_FEEDBACK=""
 RUN_UNTIL_TS=0
+BUDGET_BASELINE_USAGE_USD=""
+BUDGET_LAST_USAGE_USD=""
+BUDGET_LAST_USAGE_DELTA_USD=""
 
 AIDER_ARGS=(--yes-always --no-stream)
 if [ -f "$PROJECT_DIR/.aider.conf.yml" ]; then
@@ -74,6 +78,75 @@ is_true() {
     1|true|yes|on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+is_non_negative_number() {
+  local value="$1"
+  python3 - "$value" <<'PY'
+import sys
+try:
+    v = float(sys.argv[1])
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if v >= 0 else 1)
+PY
+}
+
+number_gt_zero() {
+  local value="$1"
+  python3 - "$value" <<'PY'
+import sys
+try:
+    v = float(sys.argv[1])
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if v > 0 else 1)
+PY
+}
+
+number_gt() {
+  local left="$1"
+  local right="$2"
+  python3 - "$left" "$right" <<'PY'
+import sys
+try:
+    left = float(sys.argv[1])
+    right = float(sys.argv[2])
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if left > right else 1)
+PY
+}
+
+number_sub_non_negative() {
+  local left="$1"
+  local right="$2"
+  python3 - "$left" "$right" <<'PY'
+import sys
+left = float(sys.argv[1])
+right = float(sys.argv[2])
+value = left - right
+if value < 0:
+    value = 0.0
+print(f"{value:.6f}")
+PY
+}
+
+extract_usage_from_budget_status() {
+  python3 - <<'PY'
+import json
+import sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("")
+    raise SystemExit(0)
+value = data.get("usage")
+if isinstance(value, (int, float)) and not isinstance(value, bool):
+    print(f"{float(value):.6f}")
+else:
+    print("")
+PY
 }
 
 configure_run_until_cutoff() {
@@ -154,6 +227,7 @@ preflight() {
   log "Review max diff chars: $REVIEW_MAX_DIFF_CHARS"
   log "Review fail-open on API error: $REVIEW_FAIL_OPEN_ON_API_ERROR"
   log "Budget guard enabled: $BUDGET_GUARD_ENABLED"
+  log "Budget max night usage (USD): $BUDGET_MAX_NIGHT_USAGE_USD"
   log "Run-until-morning mode: $RUN_UNTIL_MORNING"
 
   if [ ! -f "$TASKS_FILE" ]; then
@@ -179,6 +253,13 @@ preflight() {
   if [ "$REVIEW_GATE_ENABLED" = "true" ] || [ "$BUDGET_GUARD_ENABLED" = "true" ]; then
     if ! command -v python3 >/dev/null 2>&1; then
       log "ERROR: python3 is required for review/budget guards"
+      exit 1
+    fi
+  fi
+
+  if [ "$BUDGET_GUARD_ENABLED" = "true" ]; then
+    if ! is_non_negative_number "$BUDGET_MAX_NIGHT_USAGE_USD"; then
+      log "ERROR: DEV_FACTORY_MAX_NIGHT_USAGE_USD must be a non-negative number"
       exit 1
     fi
   fi
@@ -273,6 +354,8 @@ check_budget_guard() {
   local now
   local age
   local status
+  local usage
+  local usage_delta
 
   now="$(date +%s)"
   if [ "$LAST_BUDGET_CHECK_TS" -gt 0 ]; then
@@ -290,6 +373,37 @@ check_budget_guard() {
       --max-usage "$BUDGET_MAX_USAGE_USD" \
       --fail-open "$BUDGET_FAIL_OPEN" 2>>"$LOG_FILE")"; then
     log "Budget guard: $status"
+
+    if number_gt_zero "$BUDGET_MAX_NIGHT_USAGE_USD"; then
+      usage="$(printf '%s' "$status" | extract_usage_from_budget_status)"
+      if [ -z "$usage" ]; then
+        log "Budget night cap warning: usage metric unavailable, cannot enforce nightly delta cap"
+      else
+        BUDGET_LAST_USAGE_USD="$usage"
+        if [ -z "$BUDGET_BASELINE_USAGE_USD" ]; then
+          BUDGET_BASELINE_USAGE_USD="$usage"
+          log "Budget baseline usage set: $BUDGET_BASELINE_USAGE_USD USD"
+        fi
+
+        if number_gt "$BUDGET_BASELINE_USAGE_USD" "$usage"; then
+          BUDGET_BASELINE_USAGE_USD="$usage"
+          log "Budget baseline reset due to usage counter drop: $BUDGET_BASELINE_USAGE_USD USD"
+        fi
+
+        usage_delta="$(number_sub_non_negative "$usage" "$BUDGET_BASELINE_USAGE_USD")"
+        BUDGET_LAST_USAGE_DELTA_USD="$usage_delta"
+        log "Budget night usage: $usage_delta / $BUDGET_MAX_NIGHT_USAGE_USD USD"
+
+        if number_gt "$usage_delta" "$BUDGET_MAX_NIGHT_USAGE_USD"; then
+          log "Failure category: budget_guard"
+          log "Budget guard blocked execution"
+          log "Budget guard detail: night_usage_delta>${BUDGET_MAX_NIGHT_USAGE_USD} (delta=$usage_delta baseline=$BUDGET_BASELINE_USAGE_USD current=$usage)"
+          BUDGET_BLOCKED=true
+          return 1
+        fi
+      fi
+    fi
+
     return 0
   fi
 
