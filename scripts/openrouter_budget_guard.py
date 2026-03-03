@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import math
-import sys
-import urllib.error
+import time
 import urllib.request
 
 
@@ -28,6 +26,29 @@ def find_numeric(node, names):
     return None
 
 
+def fetch_payload(api_key: str, endpoint: str, timeout_seconds: float, retries: int, retry_delay_seconds: float):
+    request = urllib.request.Request(
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="GET",
+    )
+
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8")), attempt
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(retry_delay_seconds)
+
+    raise RuntimeError(f"budget_endpoint_error_after_{retries}_attempts: {last_exc}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check OpenRouter key budget guardrails")
     parser.add_argument("--api-key", required=True)
@@ -35,22 +56,18 @@ def main() -> int:
     parser.add_argument("--min-remaining", type=float, default=1.0)
     parser.add_argument("--max-usage", type=float, default=0.0)
     parser.add_argument("--fail-open", default="true")
+    parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--retry-delay", type=float, default=1.5)
     args = parser.parse_args()
 
     fail_open = parse_bool(args.fail_open)
-
-    request = urllib.request.Request(
-        args.endpoint,
-        headers={
-            "Authorization": f"Bearer {args.api_key}",
-            "Content-Type": "application/json",
-        },
-        method="GET",
-    )
+    retries = max(1, int(args.retries))
+    timeout = max(1.0, float(args.timeout))
+    retry_delay = max(0.0, float(args.retry_delay))
 
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        payload, attempts_used = fetch_payload(args.api_key, args.endpoint, timeout, retries, retry_delay)
     except Exception as exc:  # noqa: BLE001
         if fail_open:
             print(
@@ -60,6 +77,7 @@ def main() -> int:
                         "remaining": None,
                         "usage": None,
                         "limit": None,
+                        "attempts": retries,
                         "message": f"budget_check_error_fail_open: {exc}",
                     }
                 )
@@ -73,6 +91,7 @@ def main() -> int:
                     "remaining": None,
                     "usage": None,
                     "limit": None,
+                    "attempts": retries,
                     "message": f"budget_check_error: {exc}",
                 }
             )
@@ -104,6 +123,7 @@ def main() -> int:
         "remaining": None if remaining is None else round(remaining, 4),
         "usage": None if usage is None else round(usage, 4),
         "limit": None if limit is None else round(limit, 4),
+        "attempts": attempts_used,
         "message": "ok" if ok else ";".join(reasons),
     }
     print(json.dumps(result))

@@ -29,7 +29,10 @@ REVIEW_MODEL="${DEV_FACTORY_REVIEW_MODEL:-anthropic/claude-sonnet-4}"
 REVIEW_ENDPOINT="${DEV_FACTORY_REVIEW_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
 REVIEW_MAX_DIFF_CHARS="${DEV_FACTORY_REVIEW_MAX_DIFF_CHARS:-24000}"
 REVIEW_FAIL_OPEN="${DEV_FACTORY_REVIEW_FAIL_OPEN:-false}"
-REVIEW_FAIL_OPEN_ON_API_ERROR="${DEV_FACTORY_REVIEW_FAIL_OPEN_ON_API_ERROR:-true}"
+REVIEW_FAIL_OPEN_ON_API_ERROR="${DEV_FACTORY_REVIEW_FAIL_OPEN_ON_API_ERROR:-false}"
+REVIEW_API_RETRIES="${DEV_FACTORY_REVIEW_API_RETRIES:-2}"
+REVIEW_API_RETRY_DELAY_SECONDS="${DEV_FACTORY_REVIEW_API_RETRY_DELAY_SECONDS:-1.5}"
+REVIEW_API_TIMEOUT_SECONDS="${DEV_FACTORY_REVIEW_API_TIMEOUT_SECONDS:-45}"
 
 BUDGET_GUARD_ENABLED="${DEV_FACTORY_BUDGET_GUARD_ENABLED:-true}"
 BUDGET_ENDPOINT="${DEV_FACTORY_BUDGET_ENDPOINT:-https://openrouter.ai/api/v1/key}"
@@ -38,6 +41,9 @@ BUDGET_MAX_USAGE_USD="${DEV_FACTORY_MAX_USAGE_USD:-0}"
 BUDGET_MAX_NIGHT_USAGE_USD="${DEV_FACTORY_MAX_NIGHT_USAGE_USD:-0}"
 BUDGET_FAIL_OPEN="${DEV_FACTORY_BUDGET_FAIL_OPEN:-true}"
 BUDGET_CHECK_INTERVAL_SECONDS="${DEV_FACTORY_BUDGET_CHECK_INTERVAL_SECONDS:-300}"
+BUDGET_API_RETRIES="${DEV_FACTORY_BUDGET_API_RETRIES:-2}"
+BUDGET_API_RETRY_DELAY_SECONDS="${DEV_FACTORY_BUDGET_API_RETRY_DELAY_SECONDS:-1.5}"
+BUDGET_API_TIMEOUT_SECONDS="${DEV_FACTORY_BUDGET_API_TIMEOUT_SECONDS:-20}"
 RUN_UNTIL_MORNING="${DEV_FACTORY_RUN_UNTIL_MORNING:-false}"
 RUN_UNTIL_LOCAL_HHMM="${DEV_FACTORY_RUN_UNTIL_LOCAL_HHMM:-08:00}"
 RUN_UNTIL_TZ="${DEV_FACTORY_RUN_UNTIL_TZ:-UTC}"
@@ -226,8 +232,10 @@ preflight() {
   log "Review gate enabled: $REVIEW_GATE_ENABLED ($REVIEW_MODEL)"
   log "Review max diff chars: $REVIEW_MAX_DIFF_CHARS"
   log "Review fail-open on API error: $REVIEW_FAIL_OPEN_ON_API_ERROR"
+  log "Review API retries/delay/timeout: $REVIEW_API_RETRIES / $REVIEW_API_RETRY_DELAY_SECONDS / $REVIEW_API_TIMEOUT_SECONDS"
   log "Budget guard enabled: $BUDGET_GUARD_ENABLED"
   log "Budget max night usage (USD): $BUDGET_MAX_NIGHT_USAGE_USD"
+  log "Budget API retries/delay/timeout: $BUDGET_API_RETRIES / $BUDGET_API_RETRY_DELAY_SECONDS / $BUDGET_API_TIMEOUT_SECONDS"
   log "Run-until-morning mode: $RUN_UNTIL_MORNING"
 
   if [ ! -f "$TASKS_FILE" ]; then
@@ -260,6 +268,33 @@ preflight() {
   if [ "$BUDGET_GUARD_ENABLED" = "true" ]; then
     if ! is_non_negative_number "$BUDGET_MAX_NIGHT_USAGE_USD"; then
       log "ERROR: DEV_FACTORY_MAX_NIGHT_USAGE_USD must be a non-negative number"
+      exit 1
+    fi
+    if ! [[ "$BUDGET_API_RETRIES" =~ ^[0-9]+$ ]] || [ "$BUDGET_API_RETRIES" -lt 1 ]; then
+      log "ERROR: DEV_FACTORY_BUDGET_API_RETRIES must be a positive integer"
+      exit 1
+    fi
+    if ! is_non_negative_number "$BUDGET_API_RETRY_DELAY_SECONDS"; then
+      log "ERROR: DEV_FACTORY_BUDGET_API_RETRY_DELAY_SECONDS must be a non-negative number"
+      exit 1
+    fi
+    if ! number_gt_zero "$BUDGET_API_TIMEOUT_SECONDS"; then
+      log "ERROR: DEV_FACTORY_BUDGET_API_TIMEOUT_SECONDS must be > 0"
+      exit 1
+    fi
+  fi
+
+  if [ "$REVIEW_GATE_ENABLED" = "true" ]; then
+    if ! [[ "$REVIEW_API_RETRIES" =~ ^[0-9]+$ ]] || [ "$REVIEW_API_RETRIES" -lt 1 ]; then
+      log "ERROR: DEV_FACTORY_REVIEW_API_RETRIES must be a positive integer"
+      exit 1
+    fi
+    if ! is_non_negative_number "$REVIEW_API_RETRY_DELAY_SECONDS"; then
+      log "ERROR: DEV_FACTORY_REVIEW_API_RETRY_DELAY_SECONDS must be a non-negative number"
+      exit 1
+    fi
+    if ! number_gt_zero "$REVIEW_API_TIMEOUT_SECONDS"; then
+      log "ERROR: DEV_FACTORY_REVIEW_API_TIMEOUT_SECONDS must be > 0"
       exit 1
     fi
   fi
@@ -371,7 +406,10 @@ check_budget_guard() {
       --endpoint "$BUDGET_ENDPOINT" \
       --min-remaining "$BUDGET_MIN_REMAINING_USD" \
       --max-usage "$BUDGET_MAX_USAGE_USD" \
-      --fail-open "$BUDGET_FAIL_OPEN" 2>>"$LOG_FILE")"; then
+      --fail-open "$BUDGET_FAIL_OPEN" \
+      --timeout "$BUDGET_API_TIMEOUT_SECONDS" \
+      --retries "$BUDGET_API_RETRIES" \
+      --retry-delay "$BUDGET_API_RETRY_DELAY_SECONDS" 2>>"$LOG_FILE")"; then
     log "Budget guard: $status"
 
     if number_gt_zero "$BUDGET_MAX_NIGHT_USAGE_USD"; then
@@ -453,7 +491,10 @@ run_review_gate() {
       --task-body-file "$REVIEW_TASK_FILE" \
       --diff-file "$REVIEW_DIFF_FILE" \
       --fail-open "$REVIEW_FAIL_OPEN" \
-      --fail-open-on-api-error "$REVIEW_FAIL_OPEN_ON_API_ERROR" > "$REVIEW_OUTPUT" 2>>"$LOG_FILE"; then
+      --fail-open-on-api-error "$REVIEW_FAIL_OPEN_ON_API_ERROR" \
+      --api-retries "$REVIEW_API_RETRIES" \
+      --api-retry-delay "$REVIEW_API_RETRY_DELAY_SECONDS" \
+      --api-timeout "$REVIEW_API_TIMEOUT_SECONDS" > "$REVIEW_OUTPUT" 2>>"$LOG_FILE"; then
     summary="$(python3 - "$REVIEW_OUTPUT" <<'PY'
 import json
 import sys

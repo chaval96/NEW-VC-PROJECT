@@ -15,8 +15,9 @@
 - Coder: Aider runs task attempts with per-task timeout.
 - Test gate: wrapper runs lint/test after each attempt.
 - Review gate: `scripts/review_gate.py` must return `PASS` before task completion.
-- API safety fallback: if reviewer API is unavailable/invalid response, gate can fail-open via `DEV_FACTORY_REVIEW_FAIL_OPEN_ON_API_ERROR=true` and logs risk.
+- API reliability: reviewer API calls include retry/backoff before deciding pass/fail to reduce transient outages.
 - Budget guard: `scripts/openrouter_budget_guard.py` checks OpenRouter key budget and can stop run.
+- Budget reliability: budget endpoint checks include retry/backoff; checks are metadata calls (not model token generation).
 - Completion gate: only after test + review pass does runner commit and mark backlog item as done.
 - Run-until-morning mode: when `DEV_FACTORY_RUN_UNTIL_MORNING=true`, runner keeps refreshing tasks from backlog in waves until cutoff.
 
@@ -32,12 +33,18 @@
 - `DEV_FACTORY_REVIEW_GATE_ENABLED=true`
 - `DEV_FACTORY_REVIEW_MODEL=anthropic/claude-sonnet-4`
 - `DEV_FACTORY_REVIEW_MAX_DIFF_CHARS=24000`
-- `DEV_FACTORY_REVIEW_FAIL_OPEN_ON_API_ERROR=true`
+- `DEV_FACTORY_REVIEW_FAIL_OPEN_ON_API_ERROR=false`
+- `DEV_FACTORY_REVIEW_API_RETRIES=2`
+- `DEV_FACTORY_REVIEW_API_RETRY_DELAY_SECONDS=2`
+- `DEV_FACTORY_REVIEW_API_TIMEOUT_SECONDS=45`
 - `DEV_FACTORY_BUDGET_GUARD_ENABLED=true`
 - `DEV_FACTORY_MIN_REMAINING_USD=1.00`
 - `DEV_FACTORY_MAX_NIGHT_USAGE_USD=1.50`
 - `DEV_FACTORY_BUDGET_CHECK_INTERVAL_SECONDS=60`
 - `DEV_FACTORY_BUDGET_FAIL_OPEN=false`
+- `DEV_FACTORY_BUDGET_API_RETRIES=3`
+- `DEV_FACTORY_BUDGET_API_RETRY_DELAY_SECONDS=2`
+- `DEV_FACTORY_BUDGET_API_TIMEOUT_SECONDS=20`
 - `DEV_FACTORY_MAX_TOTAL_ITERATIONS=120`
 - `MAX_NIGHTLY_TASKS=6`
 - `DEV_FACTORY_RUN_UNTIL_MORNING=true`
