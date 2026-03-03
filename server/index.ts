@@ -10,7 +10,7 @@ import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { StateStore } from "./domain/store.js";
 import { buildTemplateProfile, SEED_FIRM_WEBSITES } from "./domain/seed.js";
-import type { AssessmentResult, CompanyProfile, Firm, PipelineStage, SubmissionStatus, Workspace } from "./domain/types.js";
+import type { AssessmentResult, CompanyProfile, Firm, PipelineStage, SubmissionStatus, SubmissionRequestStatus, Workspace } from "./domain/types.js";
 import { CampaignOrchestrator } from "./orchestrator/workflow.js";
 import { buildOverview, getCachedOverview } from "./services/analytics.js";
 import { AuthService, type AuthUser } from "./services/auth-service.js";
@@ -971,8 +971,32 @@ function isSubmissionSuccess(status: SubmissionStatus): boolean {
   return status === "submitted" || status === "form_filled";
 }
 
-function canApproveFromStatus(status: string): boolean {
-  return ["pending_approval", "pending_retry", "failed"].includes(status);
+
+const VALID_STATUS_TRANSITIONS: Record<SubmissionRequestStatus, SubmissionRequestStatus[]> = {
+  "pending_approval": ["approved", "rejected"],
+  "pending_retry": ["approved", "rejected", "executing"],
+  "approved": ["executing", "rejected"],
+  "rejected": [], // Terminal state - no transitions allowed
+  "executing": ["completed", "failed", "pending_retry"],
+  "completed": [], // Terminal state - no transitions allowed
+  "failed": ["pending_retry", "approved", "rejected"]
+};
+
+export function validateStatusTransition(currentStatus: SubmissionRequestStatus, newStatus: SubmissionRequestStatus): void {
+  if (!VALID_STATUS_TRANSITIONS[currentStatus]?.includes(newStatus)) {
+    const error = new Error(`Invalid status transition from '${currentStatus}' to '${newStatus}'`);
+    (error as Error & { status?: number }).status = 409;
+    throw error;
+  }
+}
+
+function ensureValidTransition(request: SubmissionRequest, newStatus: SubmissionRequestStatus): void {
+  try {
+    validateStatusTransition(request.status, newStatus);
+  } catch (error) {
+    console.warn(`Blocked invalid status transition for request ${request.id}: ${request.status} -> ${newStatus}`);
+    throw error;
+  }
 }
 
 function updateFirmFromExecution(
@@ -1167,16 +1191,22 @@ async function runSubmissionWatchdog(): Promise<void> {
             const attempts = request.executionAttempts ?? 0;
             const maxAttempts = Math.max(1, request.maxExecutionAttempts ?? submissionMaxAttemptsDefault);
             const canRetry = attempts < maxAttempts;
-            store.updateSubmissionRequest(workspace.id, request.id, (current) => ({
-              ...current,
-              status: canRetry ? "pending_retry" : "failed",
-              lastExecutionEndedAt: new Date().toISOString(),
-              resultNote: canRetry
-                ? `Execution timed out. Watchdog scheduled auto-retry (${attempts}/${maxAttempts}).`
-                : "Execution timed out and retry budget is exhausted.",
-              nextRetryAt: canRetry ? new Date().toISOString() : undefined,
-              executedAt: canRetry ? current.executedAt : new Date().toISOString()
-            }));
+            try {
+              ensureValidTransition(request, canRetry ? "pending_retry" : "failed");
+              store.updateSubmissionRequest(workspace.id, request.id, (current) => ({
+                ...current,
+                status: canRetry ? "pending_retry" : "failed",
+                lastExecutionEndedAt: new Date().toISOString(),
+                resultNote: canRetry
+                  ? `Execution timed out. Watchdog scheduled auto-retry (${attempts}/${maxAttempts}).`
+                  : "Execution timed out and retry budget is exhausted.",
+                nextRetryAt: canRetry ? new Date().toISOString() : undefined,
+                executedAt: canRetry ? current.executedAt : new Date().toISOString()
+              }));
+            } catch (error) {
+              console.error(`Watchdog failed to handle stale execution for ${request.id}:`, error instanceof Error ? error.message : error);
+              continue;
+            }
           }
         }
       }
@@ -2544,30 +2574,44 @@ app.post(
         failed.push({ id: requestId, message: "Submission request not found" });
         continue;
       }
-      if (!canApproveFromStatus(existing.status)) {
-        failed.push({ id: requestId, message: `Cannot approve from status '${existing.status}'` });
-        continue;
-      }
 
-      const approved = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
-        ...current,
-        status: "approved",
-        approvedBy: parsed.data.approvedBy,
-        approvedAt: new Date().toISOString()
-      }));
-
-      if (!approved) {
+      const existing = store.getSubmissionRequest(requestId, workspaceId);
+      if (!existing) {
         failed.push({ id: requestId, message: "Submission request not found" });
         continue;
       }
 
       try {
-        await runSubmissionExecution(workspaceId, requestId);
-        succeeded.push(requestId);
+        ensureValidTransition(existing, "approved");
+        const approved = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
+          ...current,
+          status: "approved",
+          approvedBy: parsed.data.approvedBy,
+          approvedAt: new Date().toISOString()
+        }));
+
+        if (!approved) {
+          failed.push({ id: requestId, message: "Submission request not found" });
+          continue;
+        }
+
+        try {
+          await runSubmissionExecution(workspaceId, requestId);
+          succeeded.push(requestId);
+        } catch (error) {
+          failed.push({
+            id: requestId,
+            message: error instanceof Error ? error.message : "Execution failed"
+          });
+        }
       } catch (error) {
+        if (error instanceof Error && error.status === 409) {
+          res.status(409).json({ message: error.message });
+          return;
+        }
         failed.push({
           id: requestId,
-          message: error instanceof Error ? error.message : "Execution failed"
+          message: error instanceof Error ? error.message : "Approval failed"
         });
       }
     }
@@ -2608,19 +2652,37 @@ app.post(
         continue;
       }
 
-      const updated = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
-        ...current,
-        status: "rejected",
-        approvedBy: parsed.data.rejectedBy,
-        approvedAt: new Date().toISOString(),
-        resultNote: parsed.data.reason
-      }));
-
-      if (!updated) {
+      const existing = store.getSubmissionRequest(requestId, workspaceId);
+      if (!existing) {
         failed.push({ id: requestId, message: "Submission request not found" });
         continue;
       }
-      rejected += 1;
+
+      try {
+        ensureValidTransition(existing, "rejected");
+        const updated = store.updateSubmissionRequest(workspaceId, requestId, (current) => ({
+          ...current,
+          status: "rejected",
+          approvedBy: parsed.data.rejectedBy,
+          approvedAt: new Date().toISOString(),
+          resultNote: parsed.data.reason
+        }));
+
+        if (!updated) {
+          failed.push({ id: requestId, message: "Submission request not found" });
+          continue;
+        }
+        rejected += 1;
+      } catch (error) {
+        if (error instanceof Error && error.status === 409) {
+          res.status(409).json({ message: error.message });
+          return;
+        }
+        failed.push({
+          id: requestId,
+          message: error instanceof Error ? error.message : "Rejection failed"
+        });
+      }
     }
 
     await store.persist();
@@ -2649,10 +2711,8 @@ app.post(
       res.status(404).json({ message: "Submission request not found" });
       return;
     }
-    if (!canApproveFromStatus(existing.status)) {
-      res.status(409).json({ message: `Submission cannot be approved from status '${existing.status}'` });
-      return;
-    }
+
+    ensureValidTransition(existing, "approved");
 
     const approved = store.updateSubmissionRequest(workspaceId, req.params.id, (current) => ({
       ...current,
@@ -2686,6 +2746,14 @@ app.post(
     }
 
     const { workspaceId } = await resolveWorkspaceContext(req, res);
+    const existing = store.getSubmissionRequest(req.params.id, workspaceId);
+    if (!existing) {
+      res.status(404).json({ message: "Submission request not found" });
+      return;
+    }
+
+    ensureValidTransition(existing, "rejected");
+
     const updated = store.updateSubmissionRequest(workspaceId, req.params.id, (current) => ({
       ...current,
       status: "rejected",

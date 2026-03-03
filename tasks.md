@@ -21,3 +21,18 @@ Priority: P0
 Priority: P0
 - Extend `/api/submissions/queue` to support deterministic sort/filter metadata (status, age, retry/stale hints) so dashboard and operators can reliably triage
 - Acceptance: Queue response includes actionable status/age fields and preserves deterministic ordering
+
+## Task 4: Improve execution evidence traceability
+Priority: P1
+- Ensure submission detail and evidence routes expose proof metadata (`proofLevel`, capture timestamp, screenshot availability) consistently for UI and audits
+- Acceptance: `/api/submissions/:id` and evidence endpoint return consistent proof metadata without regressions
+
+## Task 5: Prevent duplicate firm imports across repeated list uploads
+Priority: P1
+- Harden import merge path using normalized identity keys so repeated CSV/XLS imports do not inflate pipeline duplicates in a workspace
+- Acceptance: Importing the same list twice does not create duplicate firms for the same normalized identity
+
+## Task 6: Add watchdog workflow audit logs for retry/failure recovery
+Priority: P1
+- In submission workflow recovery, when watchdog moves requests from `executing` -> `pending_retry`/`failed`, append explicit run logs and result notes for operator forensics
+- Acceptance: Stale execution recovery events are visible in logs and request `resultNote`, aligned with approval queue workflow
